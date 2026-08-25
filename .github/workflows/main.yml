@@ -1,4 +1,4 @@
-herename: Build JLoader
+name: Build JLoader
 
 on:
   push:
@@ -35,5 +35,3 @@ jobs:
         path: |
           build/libs/*.jar
           app/build/outputs/apk/**/*.apk
-concurrency: 
-  
