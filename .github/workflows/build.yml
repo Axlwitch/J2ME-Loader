@@ -22,9 +22,8 @@ jobs:
 
       - name: Build Debug APK
         run: ./gradlew :app:assembleDebug
-
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: J2ME-Loader-Debug-APK
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/**/outputs/apk/**/*.apk
