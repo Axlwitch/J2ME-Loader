@@ -44,6 +44,7 @@ import ru.playsoftware.j2meloader.base.BaseActivity;
 import ru.playsoftware.j2meloader.config.Config;
 import ru.playsoftware.j2meloader.util.FileUtils;
 import ru.playsoftware.j2meloader.util.PickDirResultContract;
+import ru.playsoftware.j2meloader.util.TranslationManager;
 import ru.woesss.j2me.installer.InstallerDialog;
 
 import static ru.playsoftware.j2meloader.util.Constants.PREF_EMULATOR_DIR;
@@ -99,6 +100,10 @@ public class MainActivity extends BaseActivity {
 		File dir = new File(emulatorDir);
 		if (dir.isDirectory() && dir.canWrite()) {
 			FileUtils.initWorkDir(dir);
+
+			// Inisialisasi TranslationManager
+			TranslationManager.init(dir);
+
 			appListModel.getAppRepository().onWorkDirReady();
 			return;
 		}
