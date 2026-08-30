@@ -106,8 +106,8 @@ public class MicroActivity extends AppCompatActivity {
 	private InputMethodManager inputMethodManager;
 	private int menuKey;
 	private String appPath;
-	private Graphics currentGraphics;
 	private File appDataDir;
+	private Graphics currentGraphics;
 
 	public ActivityMicroBinding binding;
 
@@ -153,11 +153,15 @@ public class MicroActivity extends AppCompatActivity {
 		}
 		
 		// Setup app data directory untuk dump dan translation files
-		String appDirName = extractAppDirName(appPath);
-		String emulatorDir = Config.getEmulatorDir();
-		appDataDir = new File(emulatorDir + Config.MIDLET_DATA_DIR + appDirName);
-		if (!appDataDir.exists()) {
+		appDataDir = getAppDataDir(appPath);
+		if (appDataDir != null && !appDataDir.exists()) {
 			appDataDir.mkdirs();
+		}
+		
+		// Load translations dari file jika ada
+		if (appDataDir != null) {
+			File translationFile = new File(appDataDir, "translation.json");
+			TranslationManager.loadTranslationsFromFile(translationFile);
 		}
 		
 		String arguments = intent.getStringExtra(KEY_START_ARGUMENTS);
@@ -297,7 +301,7 @@ public class MicroActivity extends AppCompatActivity {
 					}
 					sb.append("Begin app: ").append(names[n]).append(", ").append(clazz);
 					errorReporter.putCustomData(Constants.KEY_APPCENTER_ATTACHMENT, sb.toString());
-					MidletThread.create(microLoader, midletsClassArray[n]);
+					MidletThread.create(microLoader, clazz);
 					MidletThread.resumeApp();
 				})
 				.setOnCancelListener(d -> {
@@ -350,12 +354,6 @@ public class MicroActivity extends AppCompatActivity {
 	public void setCurrent(Displayable displayable) {
 		ViewHandler.postEvent(new SetCurrentEvent(current, displayable));
 		current = displayable;
-		
-		// ✅ Cache Graphics reference jika displayable adalah Canvas
-		if (displayable instanceof Canvas) {
-			Canvas canvas = (Canvas) displayable;
-			// Note: Graphics diakses melalui Canvas internal
-		}
 	}
 
 	public Displayable getCurrent() {
@@ -372,14 +370,12 @@ public class MicroActivity extends AppCompatActivity {
 				.setMessage(R.string.FORCE_CLOSE_CONFIRMATION)
 				.setPositiveButton(android.R.string.ok, (d, w) -> {
 					hideSoftInput();
-					// Save dump sebelum exit
-					saveDumpFile();
+					saveDumpFile(); // Save sebelum exit
 					MidletThread.destroyApp();
 				})
 				.setNeutralButton(R.string.action_settings, (d, w) -> {
 					hideSoftInput();
-					// Save dump sebelum settings
-					saveDumpFile();
+					saveDumpFile(); // Save sebelum settings
 					Config.startApp(this, appName, appPath, true);
 					MidletThread.destroyApp();
 				})
@@ -506,7 +502,6 @@ public class MicroActivity extends AppCompatActivity {
 		} else if (id == R.id.action_limit_fps) {
 			showLimitFpsDialog();
 		} else if (ContextHolder.getVk() != null) {
-			// Handled only when virtual keyboard is enabled
 			handleVkOptions(id);
 		}
 		return true;
@@ -667,7 +662,6 @@ public class MicroActivity extends AppCompatActivity {
 			AdapterContextMenuInfo info = (AdapterContextMenuInfo) item.getMenuInfo();
 			((List) current).contextMenuItemSelected(item, info.position);
 		}
-
 		return super.onContextItemSelected(item);
 	}
 
@@ -681,6 +675,29 @@ public class MicroActivity extends AppCompatActivity {
 	}
 
 	/**
+	 * Mendapatkan directory untuk data aplikasi (dump, translations, dll)
+	 */
+	private File getAppDataDir(String appPath) {
+		try {
+			// Format: /storage/emulated/0/J2ME-Loader/app_data/[app_name]/
+			File baseDir = new File(Config.getEmulatorDir() + Config.MIDLET_DATA_DIR);
+			if (!baseDir.exists()) {
+				baseDir.mkdirs();
+			}
+			
+			String appDirName = extractAppDirName(appPath);
+			File appDir = new File(baseDir, appDirName);
+			if (!appDir.exists()) {
+				appDir.mkdirs();
+			}
+			return appDir;
+		} catch (Exception e) {
+			Log.e(TAG, "Error creating app data directory", e);
+			return null;
+		}
+	}
+
+	/**
 	 * Extract app directory name dari path
 	 */
 	private String extractAppDirName(String appPath) {
@@ -688,12 +705,9 @@ public class MicroActivity extends AppCompatActivity {
 			if (appPath == null || appPath.isEmpty()) {
 				return "default";
 			}
-			// Dari path "/storage/emulated/0/J2ME-Loader/converted/com.example.app"
-			// Ambil "com.example.app"
 			File f = new File(appPath);
 			return f.getName();
 		} catch (Exception e) {
-			Log.e(TAG, "Error extracting app dir name", e);
 			return "default";
 		}
 	}
@@ -702,60 +716,24 @@ public class MicroActivity extends AppCompatActivity {
 	 * 🔴 AUTO-SAVE dump.json ketika game di-pause atau di-exit
 	 */
 	private void saveDumpFile() {
+		if (appDataDir == null) {
+			Log.w(TAG, "App data directory not set");
+			return;
+		}
+		
 		try {
-			if (appDataDir == null || !appDataDir.exists()) {
-				Log.w(TAG, "App data directory not ready for saving dump");
-				return;
-			}
-
-			// Get current Graphics dari Canvas jika ada
+			// Dapatkan Graphics dari current Canvas
 			if (current instanceof Canvas) {
 				Canvas canvas = (Canvas) current;
-				// Note: Graphics tidak bisa diakses langsung dari Canvas
-				// Jadi kita gunakan ViewHandler untuk get current Graphics
-				// atau simpan reference saat setCurrent dipanggil
-				
-				// Untuk sekarang, kita gunakan approach lain:
-				// Cari Graphics melalui reflection atau kirim dump ke Graphics method
-				Log.d(TAG, "Current displayable is Canvas, attempting to save dump");
+				Graphics g = canvas.getGraphics();
+				if (g != null) {
+					File dumpFile = new File(appDataDir, "dump.json");
+					g.saveDumpToJSON(dumpFile);
+					Log.i(TAG, "✅ Dump saved to: " + dumpFile.getAbsolutePath());
+				}
 			}
-
-			// Path untuk dump.json
-			File dumpFile = new File(appDataDir, "dump.json");
-			Log.i(TAG, "Dump file path: " + dumpFile.getAbsolutePath());
-			
-			// Karena Graphics adalah object yang created per Image/Canvas,
-			// Kita perlu approach berbeda:
-			// 1. Gunakan static method di ViewHandler
-			// 2. Atau store reference di ContextHolder
-			// 3. Atau kirim event ke MIDlet thread
-			
-			// For now, log bahwa dump perlu di-save
-			// Implementasi actual bisa melalui Graphics.saveDumpToJSON() yang di-call dari Canvas render loop
-			
 		} catch (Exception e) {
-			Log.e(TAG, "Error saving dump file", e);
-		}
-	}
-
-	/**
-	 * 🟢 RELOAD translations dari file saat app mulai
-	 */
-	private void reloadTranslations() {
-		try {
-			if (appDataDir == null || !appDataDir.exists()) {
-				Log.w(TAG, "App data directory not ready for loading translations");
-				return;
-			}
-
-			File translationFile = new File(appDataDir, "translation.json");
-			
-			// Load via TranslationManager
-			TranslationManager.loadTranslationsFromFile(translationFile);
-			
-			Log.i(TAG, "Translations reloaded from: " + translationFile.getAbsolutePath());
-		} catch (Exception e) {
-			Log.e(TAG, "Error reloading translations", e);
+			Log.e(TAG, "Error saving dump", e);
 		}
 	}
 
@@ -810,7 +788,7 @@ public class MicroActivity extends AppCompatActivity {
 
 	@Override
 	protected void onDestroy() {
-		// Save dump sebelum activity di-destroy
+		// 🔴 SAVE DUMP sebelum activity di-destroy
 		saveDumpFile();
 		
 		// Shutdown TranslationManager scheduler
@@ -830,4 +808,4 @@ public class MicroActivity extends AppCompatActivity {
 			LocationProviderImpl.permissionResult = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
 		}
 	}
-}
+	}
