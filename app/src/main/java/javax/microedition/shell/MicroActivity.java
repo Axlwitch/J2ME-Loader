@@ -71,6 +71,7 @@ import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
+import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.ViewHandler;
 import javax.microedition.lcdui.event.SimpleEvent;
@@ -213,6 +214,10 @@ public class MicroActivity extends AppCompatActivity {
 		visible = false;
 		hideSoftInput();
 		MidletThread.pauseApp();
+		
+		// Auto-save dump saat aplikasi masuk background
+		saveDumpAutomatically();
+		
 		super.onPause();
 	}
 
@@ -331,6 +336,18 @@ public class MicroActivity extends AppCompatActivity {
 	public void setCurrent(Displayable displayable) {
 		ViewHandler.postEvent(new SetCurrentEvent(current, displayable));
 		current = displayable;
+		
+		// Auto Load translation.json ke Graphics ketika Canvas baru aktif
+		if (displayable instanceof Canvas) {
+			Canvas canvas = (Canvas) displayable;
+			Graphics g = canvas.getGraphics();
+			if (g != null) {
+				File translationFile = new File(appPath, "translation.json");
+				if (translationFile.exists()) {
+					g.loadTranslationsFromFile(translationFile);
+				}
+			}
+		}
 	}
 
 	public Displayable getCurrent() {
@@ -347,10 +364,12 @@ public class MicroActivity extends AppCompatActivity {
 				.setMessage(R.string.FORCE_CLOSE_CONFIRMATION)
 				.setPositiveButton(android.R.string.ok, (d, w) -> {
 					hideSoftInput();
+					saveDumpAutomatically();
 					MidletThread.destroyApp();
 				})
 				.setNeutralButton(R.string.action_settings, (d, w) -> {
 					hideSoftInput();
+					saveDumpAutomatically();
 					Config.startApp(this, appName, appPath, true);
 					MidletThread.destroyApp();
 				})
@@ -651,6 +670,22 @@ public class MicroActivity extends AppCompatActivity {
 		return appName;
 	}
 
+	// Internal helper untuk menyimpan dump secara otomatis di latar belakang
+	private void saveDumpAutomatically() {
+		try {
+			if (current instanceof Canvas) {
+				Canvas canvas = (Canvas) current;
+				Graphics g = canvas.getGraphics();
+				if (g != null && appPath != null) {
+					File dumpFile = new File(appPath, "dump.json");
+					g.saveDumpToJSON(dumpFile);
+				}
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
 	private class SetCurrentEvent extends SimpleEvent {
 		private final Displayable current;
 		private final Displayable next;
@@ -702,6 +737,9 @@ public class MicroActivity extends AppCompatActivity {
 
 	@Override
 	protected void onDestroy() {
+		// Auto-save dump saat aplikasi ditutup
+		saveDumpAutomatically();
+		
 		binding = null;
 		super.onDestroy();
 	}
