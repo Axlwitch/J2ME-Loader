@@ -1,13 +1,9 @@
 package ru.playsoftware.j2meloader.util;
 
-import android.util.Log;
-
 import org.json.JSONObject;
-
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -17,123 +13,93 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class TranslationManager {
-    private static final String TAG = "TranslationManager";
+    // Membaca kamus terjemahan dari translation.json ("pay": "bayar")
     private static final Map<String, String> translationMap = new HashMap<>();
+    
+    // Menampung teks mentah yang ditangkap untuk disimpan ke dump.json
     private static final Map<String, String> dumpedStrings = new ConcurrentHashMap<>();
-    private static File jsonFile;
-    private static boolean isDumpMode = true;
+    
+    private static File translationFile;
+    private static File dumpFile;
+    
+    private static boolean isDumpMode = true; 
     private static volatile boolean hasNewDataToSave = false;
     private static ScheduledExecutorService saveScheduler;
 
     public static void init(File gameDir) {
         if (gameDir == null) return;
-        jsonFile = new File(gameDir, "translation.json");
+        
+        translationFile = new File(gameDir, "translation.json");
+        dumpFile = new File(gameDir, "dump.json");
+        
         loadTranslation();
+        loadExistingDump();
 
+        // Auto-save dump.json per 3 detik jika ada string baru
         if (isDumpMode && saveScheduler == null) {
             saveScheduler = Executors.newSingleThreadScheduledExecutor();
             saveScheduler.scheduleWithFixedDelay(TranslationManager::saveDumpInternal, 3, 3, TimeUnit.SECONDS);
         }
     }
 
+    // 1. Memuat kamus terjemahan (translation.json)
     public static void loadTranslation() {
-        if (jsonFile == null || !jsonFile.exists()) {
-            Log.w(TAG, "Translation file not found: " + (jsonFile != null ? jsonFile.getAbsolutePath() : "null"));
-            return;
-        }
-        
-        try (FileReader reader = new FileReader(jsonFile)) {
+        if (translationFile == null || !translationFile.exists()) return;
+        try (FileReader reader = new FileReader(translationFile)) {
             StringBuilder sb = new StringBuilder();
             int ch;
             while ((ch = reader.read()) != -1) {
                 sb.append((char) ch);
             }
-            if (sb.length() == 0) {
-                Log.w(TAG, "Translation file is empty");
-                return;
-            }
+            if (sb.length() == 0) return;
             
-            String jsonStr = sb.toString();
-            Log.d(TAG, "Loading translations from: " + jsonFile.getAbsolutePath());
-            Log.d(TAG, "JSON content length: " + jsonStr.length());
-            
-            JSONObject json = new JSONObject(jsonStr);
-            
-            // Format: { "translations": { "key": "value" } }
-            if (json.has("translations")) {
-                JSONObject translationsObj = json.getJSONObject("translations");
-                Iterator<String> keys = translationsObj.keys();
-                int count = 0;
-                while (keys.hasNext()) {
-                    String key = keys.next();
-                    String val = translationsObj.getString(key);
-                    translationMap.put(key, val);
-                    dumpedStrings.put(key, val);
-                    count++;
-                }
-                Log.i(TAG, "✅ Loaded " + count + " translations from file");
-            } else {
-                // Fallback: langsung parse root sebagai translations
-                Log.w(TAG, "No 'translations' key found, parsing root as translations");
-                Iterator<String> keys = json.keys();
-                int count = 0;
-                while (keys.hasNext()) {
-                    String key = keys.next();
-                    String val = json.getString(key);
-                    translationMap.put(key, val);
-                    dumpedStrings.put(key, val);
-                    count++;
-                }
-                Log.i(TAG, "✅ Loaded " + count + " translations from root");
+            JSONObject json = new JSONObject(sb.toString());
+            Iterator<String> keys = json.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                translationMap.put(key, json.getString(key));
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error loading translation file: " + jsonFile.getAbsolutePath(), e);
+            e.printStackTrace();
         }
     }
 
-    /**
-     * Load translations from file (public method untuk dipanggil dari MicroActivity)
-     */
-    public static void loadTranslationsFromFile(File file) {
-        if (file == null || !file.exists()) {
-            Log.w(TAG, "Translation file not found: " + (file != null ? file.getAbsolutePath() : "null"));
-            return;
+    // 2. Memuat dump lama agar data tidak terhapus saat game di-restart
+    private static void loadExistingDump() {
+        if (dumpFile == null || !dumpFile.exists()) return;
+        try (FileReader reader = new FileReader(dumpFile)) {
+            StringBuilder sb = new StringBuilder();
+            int ch;
+            while ((ch = reader.read()) != -1) {
+                sb.append((char) ch);
+            }
+            if (sb.length() == 0) return;
+
+            JSONObject json = new JSONObject(sb.toString());
+            Iterator<String> keys = json.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                dumpedStrings.put(key, json.getString(key));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-        // Clear existing translations
-        translationMap.clear();
-        dumpedStrings.clear();
-        
-        // Set jsonFile
-        jsonFile = file;
-        loadTranslation();
     }
 
+    // 3. Menyimpan teks mentah ke dump.json
     private static synchronized void saveDumpInternal() {
-        if (!isDumpMode || !hasNewDataToSave || jsonFile == null) {
-            return;
-        }
-        
+        if (!isDumpMode || !hasNewDataToSave || dumpFile == null) return;
         try {
             JSONObject json = new JSONObject();
-            
-            // Format: { "translations": { "key": "value" } }
-            JSONObject translationsObj = new JSONObject();
             for (Map.Entry<String, String> entry : dumpedStrings.entrySet()) {
-                translationsObj.put(entry.getKey(), entry.getValue());
+                json.put(entry.getKey(), entry.getValue());
             }
-            json.put("translations", translationsObj);
-            json.put("version", "1.0");
-            json.put("timestamp", System.currentTimeMillis());
-            
-            // Write to file
-            try (FileWriter writer = new FileWriter(jsonFile)) {
-                writer.write(json.toString(4));
+            try (FileWriter writer = new FileWriter(dumpFile)) {
+                writer.write(json.toString(4)); // Indentasi 4 spasi agar rapi dibaca
             }
-            
             hasNewDataToSave = false;
-            Log.d(TAG, "✅ Dump saved to: " + jsonFile.getAbsolutePath());
         } catch (Exception e) {
-            Log.e(TAG, "Error saving dump", e);
+            e.printStackTrace();
         }
     }
 
@@ -141,47 +107,24 @@ public class TranslationManager {
         if (saveScheduler != null && !saveScheduler.isShutdown()) {
             saveScheduler.shutdownNow();
             saveScheduler = null;
-            Log.d(TAG, "Scheduler shut down");
         }
     }
 
     public static String processString(String original) {
-        if (original == null || original.trim().isEmpty()) {
-            return original;
-        }
+        if (original == null || original.trim().isEmpty()) return original;
 
-        // 1. Cek terjemahan
+        // 1. Cek apakah ada di translation.json (kamus)
         if (translationMap.containsKey(original)) {
             return translationMap.get(original);
         }
 
-        // 2. Jika belum ada di kamus dan mode dump aktif, daftarkan teks baru
+        // 2. Jika tidak ada di kamus dan belum ada di dump.json, catat ke dump.json
         if (isDumpMode && !dumpedStrings.containsKey(original)) {
-            dumpedStrings.put(original, original);
+            // Value diisi string kosong "" agar mudah di-edit di dashboard/editor kamu
+            dumpedStrings.put(original, "");
             hasNewDataToSave = true;
         }
 
         return original;
     }
-
-    /**
-     * Get all translations
-     */
-    public static Map<String, String> getTranslations() {
-        return new HashMap<>(translationMap);
-    }
-
-    /**
-     * Get all dumped strings
-     */
-    public static Map<String, String> getDumpedStrings() {
-        return new HashMap<>(dumpedStrings);
-    }
-
-    /**
-     * Clear all translations
-     */
-    public static void clearTranslations() {
-        translationMap.clear();
-    }
-            }
+}
