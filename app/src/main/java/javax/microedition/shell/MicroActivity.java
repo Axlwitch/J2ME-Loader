@@ -712,36 +712,7 @@ public class MicroActivity extends AppCompatActivity {
 		}
 	}
      
-	/**
-	 * 🔴 AUTO-SAVE dump.json ketika game di-pause atau di-exit
-	 */
-	/*
-	private void saveDumpFile() {
-		if (appDataDir == null) {
-			Log.w(TAG, "App data directory not set");
-			return;
-		}
-		
-		try {
-			// Dapatkan Graphics dari current Canvas
-			/*
-			if (current instanceof Canvas) {
-				Canvas canvas = (Canvas) current;
-				Graphics g = canvas.getGraphics();
-				if (g != null) {
-					File dumpFile = new File(appDataDir, "dump.json");
-					g.saveDumpToJSON(dumpFile);
-					Log.i(TAG, "✅ Dump saved to: " + dumpFile.getAbsolutePath());
-				}
-				
-			   // Sementara disable - perlu implementasi ulang
-               Log.d(TAG, "Save dump temporarily disabled");
-			}
-		} catch (Exception e) {
-			Log.e(TAG, "Error saving dump", e);
-		}
-	}
-  */
+	
 
 	private class SetCurrentEvent extends SimpleEvent {
 		private final Displayable current;
