@@ -13,10 +13,13 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class TranslationManager {
-    // Membaca kamus terjemahan dari translation.json ("pay": "bayar")
+    // Memuat terjemahan dari translation.json ("TEKS_ASLI": "TEKS_TERJEMAHAN")
     private static final Map<String, String> translationMap = new HashMap<>();
     
-    // Menampung teks mentah yang ditangkap untuk disimpan ke dump.json
+    // Reverse map untuk mengecek apakah suatu string adalah hasil terjemahan ("TEKS_TERJEMAHAN": "TEKS_ASLI")
+    private static final Map<String, String> reverseTranslationMap = new HashMap<>();
+    
+    // Menampung hasil dump untuk dump.json ("TEKS_ASLI": "TEKS_ASLI")
     private static final Map<String, String> dumpedStrings = new ConcurrentHashMap<>();
     
     private static File translationFile;
@@ -35,14 +38,14 @@ public class TranslationManager {
         loadTranslation();
         loadExistingDump();
 
-        // Auto-save dump.json per 3 detik jika ada string baru
+        // Auto-save dump.json per 3 detik jika ada data baru
         if (isDumpMode && saveScheduler == null) {
             saveScheduler = Executors.newSingleThreadScheduledExecutor();
             saveScheduler.scheduleWithFixedDelay(TranslationManager::saveDumpInternal, 3, 3, TimeUnit.SECONDS);
         }
     }
 
-    // 1. Memuat kamus terjemahan (translation.json)
+    // 1. Memuat file translation.json & membuat reverse map pencegah dump terjemahan
     public static void loadTranslation() {
         if (translationFile == null || !translationFile.exists()) return;
         try (FileReader reader = new FileReader(translationFile)) {
@@ -57,14 +60,16 @@ public class TranslationManager {
             Iterator<String> keys = json.keys();
             while (keys.hasNext()) {
                 String key = keys.next();
-                translationMap.put(key, json.getString(key));
+                String val = json.getString(key);
+                translationMap.put(key, val);
+                reverseTranslationMap.put(val, key); // Simpan hasil terjemahan untuk filter
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    // 2. Memuat dump lama agar data tidak terhapus saat game di-restart
+    // 2. Memuat dump.json yang sudah ada sebelumnya
     private static void loadExistingDump() {
         if (dumpFile == null || !dumpFile.exists()) return;
         try (FileReader reader = new FileReader(dumpFile)) {
@@ -86,7 +91,7 @@ public class TranslationManager {
         }
     }
 
-    // 3. Menyimpan teks mentah ke dump.json
+    // 3. Menyimpan dump ke file secara aman
     private static synchronized void saveDumpInternal() {
         if (!isDumpMode || !hasNewDataToSave || dumpFile == null) return;
         try {
@@ -95,7 +100,7 @@ public class TranslationManager {
                 json.put(entry.getKey(), entry.getValue());
             }
             try (FileWriter writer = new FileWriter(dumpFile)) {
-                writer.write(json.toString(4)); // Indentasi 4 spasi agar rapi dibaca
+                writer.write(json.toString(4)); // Formatting JSON 4 spasi
             }
             hasNewDataToSave = false;
         } catch (Exception e) {
@@ -110,19 +115,57 @@ public class TranslationManager {
         }
     }
 
+    // 4. Proses Pengecekan Teks Utama
     public static String processString(String original) {
-        if (original == null || original.trim().isEmpty()) return original;
+        if (original == null) return original;
+        
+        String trimmed = original.trim();
 
-        // 1. Cek apakah ada di translation.json (kamus)
-        if (translationMap.containsKey(original)) {
-            return translationMap.get(original);
+        // Filter: Abaikan teks kosong, angka murni, atau teks 1 karakter
+        if (trimmed.isEmpty() || trimmed.length() <= 1 || trimmed.matches("^\\d+$")) {
+            return original;
         }
 
-        // 2. Jika tidak ada di kamus dan belum ada di dump.json, catat ke dump.json
-        if (isDumpMode && !dumpedStrings.containsKey(original)) {
-            // Value diisi string kosong "" agar mudah di-edit di dashboard/editor kamu
-            dumpedStrings.put(original, "");
-            hasNewDataToSave = true;
+        // --- ATURAN 1: BILA TEKS SUDAH ADA DI KAMUS (translation.json) ---
+        if (translationMap.containsKey(trimmed)) {
+            // Bersihkan dari dump jika teks ini ternyata pernah masuk ke dump.json
+            if (dumpedStrings.containsKey(trimmed)) {
+                dumpedStrings.remove(trimmed);
+                hasNewDataToSave = true;
+            }
+            return original.replace(trimmed, translationMap.get(trimmed));
+        }
+
+        // --- ATURAN 2: CEGAH DUMP TEKS HASIL TERJEMAHAN ---
+        // Jika string ini adalah 'Value' (Bahasa Indonesia) dari kamus, jangan dimasukkan ke dump.json
+        if (reverseTranslationMap.containsKey(trimmed)) {
+            return original;
+        }
+
+        // --- ATURAN 3: DUMP TEKS MENTAH DENGAN FILTER SUBSTRING ---
+        if (isDumpMode) {
+            // 3a. Hapus substring yang lebih pendek dari daftar dump jika kalimat yang lebih panjang muncul
+            for (String key : dumpedStrings.keySet()) {
+                if (trimmed.length() > key.length() && trimmed.contains(key)) {
+                    dumpedStrings.remove(key);
+                    hasNewDataToSave = true;
+                }
+            }
+
+            // 3b. Cek apakah teks ini merupakan pecahan/potongan dari teks panjang yang sudah di-dump
+            boolean isSubText = false;
+            for (String key : dumpedStrings.keySet()) {
+                if (key.length() >= trimmed.length() && key.contains(trimmed)) {
+                    isSubText = true;
+                    break;
+                }
+            }
+
+            // 3c. Jika benar-benar teks baru, simpan dengan format ("TEKS_ASLI": "TEKS_ASLI")
+            if (!isSubText && !dumpedStrings.containsKey(trimmed)) {
+                dumpedStrings.put(trimmed, trimmed);
+                hasNewDataToSave = true;
+            }
         }
 
         return original;
