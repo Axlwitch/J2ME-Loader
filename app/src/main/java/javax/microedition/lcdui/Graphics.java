@@ -81,15 +81,14 @@ public class Graphics implements
 	private com.mascotcapsule.micro3d.v3.Graphics3D g3d;
 
 	// ===== TEXT DUMPING & TRANSLATION FEATURE =====
-	private StringBuilder textDumpBuilder = new StringBuilder();
-	private boolean textDumpEnabled = false;
-	private Map<String, String> translations = new HashMap<>(); // Load dari translation.json
-	private Set<String> dumpedTexts = new HashSet<>(); // Track yang sudah di-dump
+	private boolean textDumpEnabled = true; // Langsung aktif di background
+	private final Map<String, String> translations = new HashMap<>(); // Tempat menampung translation.json
+	private final Set<String> dumpedTexts = new HashSet<>(); // Track teks unik untuk dump.json
 	
-	// Text wrapping configuration
-	private int maxTextWidth = 150; // Max width in pixels before wrapping
-	private boolean autoScaleFontForLongText = true; // Reduce font size if text too long
-	private float minFontScale = 0.7f; // Minimum 70% size
+	// Configuration
+	private int maxTextWidth = 150;
+	private boolean autoScaleFontForLongText = true;
+	private float minFontScale = 0.7f;
 
 	Graphics(Image image) {
 		this.image = image;
@@ -321,6 +320,14 @@ public class Graphics implements
 	}
 
 	public void drawChars(char[] data, int offset, int length, int x, int y, int anchor) {
+		String originalText = new String(data, offset, length);
+		String textToDraw = originalText;
+
+		// 1. Cek translation map jika ada
+		if (translations.containsKey(originalText)) {
+			textToDraw = translations.get(originalText);
+		}
+
 		Paint paint = font.paint;
 		if ((anchor & Graphics.RIGHT) != 0) {
 			paint.setTextAlign(Paint.Align.RIGHT);
@@ -342,21 +349,26 @@ public class Graphics implements
 		}
 
 		paint.setColor(fillPaint.getColor());
-		canvas.drawText(data, offset, length, x, ly, paint);
+		canvas.drawText(textToDraw.toCharArray(), 0, textToDraw.length(), x, ly, paint);
 
-		// Dump text jika enabled dan belum ditranslate
+		// 2. Dump jika belum ada di translation & belum di-dump
 		if (textDumpEnabled) {
-			String text = new String(data, offset, length);
-			if (!translations.containsKey(text) && !dumpedTexts.contains(text)) {
-				addTextDumpEntry(text, x, y, anchor, "chars");
-				dumpedTexts.add(text);
+			if (!translations.containsKey(originalText) && !dumpedTexts.contains(originalText)) {
+				dumpedTexts.add(originalText);
 			}
 		}
 	}
 
 	public void drawString(String text, int x, int y, int anchor) {
+		if (text == null) return;
 		String originalText = text;
-		text = TranslationManager.processString(text);
+		
+		// 1. Load dari translation.json jika ada
+		if (translations.containsKey(originalText)) {
+			text = translations.get(originalText);
+		} else {
+			text = TranslationManager.processString(text);
+		}
 
 		Paint paint = font.paint;
 		if ((anchor & Graphics.RIGHT) != 0) {
@@ -380,10 +392,8 @@ public class Graphics implements
 
 		paint.setColor(fillPaint.getColor());
 		
-		// Check if text width exceeds max width
 		float textWidth = paint.measureText(text);
 		if (textWidth > maxTextWidth && autoScaleFontForLongText) {
-			// Scale font size to fit
 			float scaleFactor = maxTextWidth / textWidth;
 			scaleFactor = Math.max(scaleFactor, minFontScale);
 			paint.setTextScaleX(scaleFactor);
@@ -393,10 +403,9 @@ public class Graphics implements
 		
 		canvas.drawText(text, x, ly, paint);
 
-		// Dump text jika enabled dan belum ditranslate
+		// 2. Dump teks mentah asli jika belum ter-translate & belum di-dump
 		if (textDumpEnabled) {
 			if (!translations.containsKey(originalText) && !dumpedTexts.contains(originalText)) {
-				addTextDumpEntry(originalText, x, y, anchor, "direct");
 				dumpedTexts.add(originalText);
 			}
 		}
@@ -427,18 +436,12 @@ public class Graphics implements
 	public void drawSubstring(String str, int offset, int len, int x, int y, int anchor) {
 		if (str == null) return;
 		String sub = str.substring(offset, offset + len);
-		sub = TranslationManager.processString(sub);
 		drawString(sub, x, y, anchor);
 	}
 
 	public void drawRegion(Image image, int x_src, int y_src, int width, int height,
 						   int transform, int x_dst, int y_dst, int anchor) {
 		if (width <= 0 || height <= 0) return;
-
-		// Deteksi apakah ini adalah glyph rendering (small region dari font atlas)
-		if (textDumpEnabled && isLikelyGlyph(width, height)) {
-			recordGlyphRender(image, x_src, y_src, width, height, x_dst, y_dst);
-		}
 
 		Rect srcR = rect;
 		RectF dstR = rectF;
@@ -636,79 +639,59 @@ public class Graphics implements
 		g3d.release(this);
 	}
 
-	// ===== TEXT DUMPING & TRANSLATION MANAGEMENT =====
+	// ===== TRANSLATION LOAD & DUMP ENGINE =====
 
-	/**
-	 * Deteksi apakah region adalah glyph (kecil, untuk bitmap font)
-	 */
-	private boolean isLikelyGlyph(int width, int height) {
-		// Glyph biasanya kecil: 8-32 pixel
-		return width >= 8 && width <= 64 && height >= 8 && height <= 64;
-	}
-
-	/**
-	 * Record glyph rendering untuk dump
-	 */
-	private void recordGlyphRender(Image image, int x_src, int y_src, int width, int height,
-								   int x_dst, int y_dst) {
-		// Catat posisi glyph sebagai placeholder "[GLYPH]"
-		addTextDumpEntry(String.format("[GLYPH:%dx%d@%d,%d]", width, height, x_src, y_src),
-				x_dst, y_dst, Graphics.LEFT, "glyph");
-	}
-
-	/**
-	 * Load translations dari Map
-	 */
-	public void loadTranslations(Map<String, String> translationMap) {
-		if (translationMap != null) {
-			this.translations.putAll(translationMap);
-			Log.i("Graphics", "Loaded " + translationMap.size() + " translations");
-		}
-	}
-
-	/**
-	 * Load translations dari file translation.json
-	 * PENTING: Selalu clear memory dulu sebelum load dari file
-	 * Format file: {
-	 *   "version": "1.0",
-	 *   "timestamp": 123456789,
-	 *   "translations": {
-	 *     "原始文本": "翻译文本",
-	 *     ...
-	 *   }
-	 * }
-	 */
 	public void loadTranslationsFromFile(File translationFile) {
-		// PENTING: Clear memory dulu - ini akan menghapus translations lama dari memory
 		translations.clear();
-		
-		if (translationFile == null || !translationFile.exists()) {
-			Log.w("Graphics", "Translation file not found or null: " + 
-				(translationFile != null ? translationFile.getAbsolutePath() : "null"));
-			return;
-		}
+		if (translationFile == null || !translationFile.exists()) return;
 
 		try {
 			String jsonContent = readFileAsString(translationFile);
-			Map<String, String> loadedTranslations = parseTranslationJson(jsonContent);
+			JSONObject jsonObj = new JSONObject(jsonContent);
+			JSONObject translationsObj = jsonObj.optJSONObject("translations");
 			
-			if (loadedTranslations != null && !loadedTranslations.isEmpty()) {
-				translations.putAll(loadedTranslations);
-				Log.i("Graphics", "Loaded " + loadedTranslations.size() + " translations from: " + 
-					translationFile.getAbsolutePath());
-			} else {
-				Log.w("Graphics", "Translation file is empty or invalid: " + 
-					translationFile.getAbsolutePath());
+			if (translationsObj != null) {
+				java.util.Iterator<String> keys = translationsObj.keys();
+				while (keys.hasNext()) {
+					String key = keys.next();
+					translations.put(key, translationsObj.getString(key));
+				}
+				Log.i("Graphics", "Loaded " + translations.size() + " translations.");
 			}
 		} catch (Exception e) {
-			Log.e("Graphics", "Error loading translations from file: " + 
-				translationFile.getAbsolutePath(), e);
+			Log.e("Graphics", "Error loading translations", e);
 		}
 	}
 
-	/**
-	 * Baca file sebagai string
-	 */
+	public void saveDumpToJSON(File outputFile) {
+		if (dumpedTexts.isEmpty()) return;
+
+		try {
+			File parentDir = outputFile.getParentFile();
+			if (parentDir != null && !parentDir.exists()) {
+				parentDir.mkdirs();
+			}
+
+			JSONObject root = new JSONObject();
+			root.put("version", "1.0");
+			root.put("timestamp", System.currentTimeMillis());
+
+			JSONObject textsObj = new JSONObject();
+			for (String text : dumpedTexts) {
+				textsObj.put(text, ""); // Key: teks asli, Value: string kosong
+			}
+			root.put("texts", textsObj);
+
+			try (FileWriter writer = new FileWriter(outputFile)) {
+				writer.write(root.toString(2));
+			}
+
+			Log.i("Graphics", "✅ dump.json saved to: " + outputFile.getAbsolutePath());
+		} catch (Exception e) {
+			Log.e("Graphics", "Error saving dump.json", e);
+		}
+	}
+
 	private String readFileAsString(File file) throws IOException {
 		StringBuilder sb = new StringBuilder();
 		try (FileReader reader = new FileReader(file)) {
@@ -721,233 +704,11 @@ public class Graphics implements
 		return sb.toString();
 	}
 
-	/**
-	 * Parse JSON translation dari string
-	 * Format: { "translations": { "key": "value" } }
-	 */
-	private Map<String, String> parseTranslationJson(String json) {
-		Map<String, String> result = new HashMap<>();
-		try {
-			JSONObject jsonObj = new JSONObject(json);
-			
-			// Cek apakah ada "translations" key
-			if (jsonObj.has("translations")) {
-				JSONObject translationsObj = jsonObj.getJSONObject("translations");
-				
-				// Iterasi semua keys dalam translations
-				java.util.Iterator<String> keys = translationsObj.keys();
-				while (keys.hasNext()) {
-					String key = keys.next();
-					String value = translationsObj.getString(key);
-					result.put(key, value);
-				}
-				Log.i("Graphics", "Successfully parsed " + result.size() + " translations from JSON");
-			} else {
-				Log.w("Graphics", "No 'translations' key found in JSON");
-			}
-		} catch (JSONException e) {
-			Log.e("Graphics", "Error parsing translation JSON", e);
-		} catch (Exception e) {
-			Log.e("Graphics", "Unexpected error parsing translation JSON", e);
-		}
-		return result;
-	}
-
-	/**
-	 * Mengaktifkan atau menonaktifkan text dumping
-	 * PENTING: Panggil saveDumpToJSON() SEBELUM disable jika ingin menyimpan!
-	 * Jangan lupa panggil clearTextDumpEntries() jika ingin reset manual
-	 */
-	public void setTextDumpEnabled(boolean enabled) {
-		this.textDumpEnabled = enabled;
-		// ✅ PERBAIKAN: Jangan auto-clear data saat disable
-		// Biarkan user kontrol kapan mau clear
-		// Ini memastikan saveDumpToJSON() bisa dipanggil setelah disable
-		if (!enabled) {
-			Log.i("Graphics", "Text dump disabled - remember to save dump before clearing!");
-		}
-	}
-
-	/**
-	 * Disable text dump dan clear semua data (untuk reset manual)
-	 */
-	public void disableAndClearDump() {
-		this.textDumpEnabled = false;
-		textDumpBuilder.setLength(0);
-		dumpedTexts.clear();
-		Log.i("Graphics", "Text dump disabled and cleared");
-	}
-
-	/**
-	 * Set max text width sebelum auto-scale
-	 */
 	public void setMaxTextWidth(int widthPixels) {
 		this.maxTextWidth = widthPixels;
 	}
 
-	/**
-	 * Enable/disable auto font scaling untuk text panjang
-	 */
 	public void setAutoScaleFontForLongText(boolean enabled) {
 		this.autoScaleFontForLongText = enabled;
-	}
-
-	/**
-	 * Menambahkan entry text ke dump
-	 */
-	private void addTextDumpEntry(String text, int x, int y, int anchor, String renderType) {
-		if (text != null && !text.isEmpty() && textDumpBuilder.length() < 50000) { // Limit size
-			if (textDumpBuilder.length() > 0) {
-				textDumpBuilder.append("\n");
-			}
-			textDumpBuilder.append(String.format("\"%s\": \"\"", escapeJsonString(text)));
-		}
-	}
-
-	/**
-	 * Escape special characters untuk JSON
-	 */
-	private String escapeJsonString(String str) {
-		if (str == null) return "";
-		return str.replace("\\", "\\\\")
-				.replace("\"", "\\\"")
-				.replace("\n", "\\n")
-				.replace("\r", "\\r")
-				.replace("\t", "\\t");
-	}
-
-	/**
-	 * Simpan text dump ke dump.json (hanya teks yang belum ditranslate)
-	 */
-	public void saveDumpToJSON(String filePath) {
-		saveDumpToJSON(new File(filePath));
-	}
-
-	/**
-	 * Simpan text dump ke dump.json
-	 */
-	public void saveDumpToJSON(File outputFile) {
-		if (textDumpBuilder.length() == 0) {
-			Log.w("Graphics", "Text dump entries is empty - nothing to save");
-			return;
-		}
-
-		try {
-			// Ensure parent directory exists
-			File parentDir = outputFile.getParentFile();
-			if (parentDir != null && !parentDir.exists()) {
-				parentDir.mkdirs();
-			}
-
-			try (FileWriter writer = new FileWriter(outputFile)) {
-				writer.write("{\n");
-				writer.write("  \"version\": \"1.0\",\n");
-				writer.write("  \"timestamp\": " + System.currentTimeMillis() + ",\n");
-				writer.write("  \"texts\": {\n");
-				writer.write("    " + textDumpBuilder.toString().replace("\n", ",\n    "));
-				writer.write("\n  }\n");
-				writer.write("}\n");
-			}
-
-			Log.i("Graphics", "✅ Dump saved successfully to: " + outputFile.getAbsolutePath());
-		} catch (IOException e) {
-			Log.e("Graphics", "Error saving dump to JSON", e);
-		}
-	}
-
-	/**
-	 * Simpan translations ke translation.json
-	 * Format: { "version": "1.0", "timestamp": 123456, "translations": { "key": "value" } }
-	 */
-	public void saveTranslationsToJSON(Map<String, String> translationMap, String filePath) {
-		saveTranslationsToJSON(translationMap, new File(filePath));
-	}
-
-	/**
-	 * Simpan translations ke translation.json
-	 */
-	public void saveTranslationsToJSON(Map<String, String> translationMap, File outputFile) {
-		if (translationMap == null || translationMap.isEmpty()) {
-			Log.w("Graphics", "Translation map is empty - nothing to save");
-			return;
-		}
-
-		try {
-			// Ensure parent directory exists
-			File parentDir = outputFile.getParentFile();
-			if (parentDir != null && !parentDir.exists()) {
-				parentDir.mkdirs();
-			}
-
-			try (FileWriter writer = new FileWriter(outputFile)) {
-				writer.write("{\n");
-				writer.write("  \"version\": \"1.0\",\n");
-				writer.write("  \"timestamp\": " + System.currentTimeMillis() + ",\n");
-				writer.write("  \"translations\": {\n");
-				
-				int count = 0;
-				for (Map.Entry<String, String> entry : translationMap.entrySet()) {
-					writer.write("    \"" + escapeJsonString(entry.getKey()) + "\": \"" + 
-							escapeJsonString(entry.getValue()) + "\"");
-					if (count < translationMap.size() - 1) {
-						writer.write(",");
-					}
-					writer.write("\n");
-					count++;
-				}
-				
-				writer.write("  }\n");
-				writer.write("}\n");
-			}
-
-			Log.i("Graphics", "✅ Translations saved successfully to: " + outputFile.getAbsolutePath());
-		} catch (IOException e) {
-			Log.e("Graphics", "Error saving translations to JSON", e);
-		}
-	}
-
-	/**
-	 * Mendapatkan text dump content
-	 */
-	public String getTextDumpContent() {
-		return textDumpBuilder.toString();
-	}
-
-	/**
-	 * Menghapus semua text entries (dump)
-	 */
-	public void clearTextDumpEntries() {
-		textDumpBuilder.setLength(0);
-		dumpedTexts.clear();
-		Log.i("Graphics", "Text dump entries cleared");
-	}
-
-	/**
-	 * Mendapatkan jumlah text entries
-	 */
-	public int getTextDumpCount() {
-		return dumpedTexts.size();
-	}
-
-	/**
-	 * Clear translations dari memory
-	 */
-	public void clearTranslations() {
-		translations.clear();
-		Log.i("Graphics", "Translations cleared from memory");
-	}
-
-	/**
-	 * Check apakah ada translations yang loaded
-	 */
-	public boolean hasTranslations() {
-		return !translations.isEmpty();
-	}
-
-	/**
-	 * Mendapatkan jumlah translations
-	 */
-	public int getTranslationsCount() {
-		return translations.size();
 	}
 }
