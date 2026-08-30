@@ -43,7 +43,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import org.json.JSONObject;
-import org.json.JSONException;
 
 public class Graphics implements
 		com.vodafone.v10.graphics.j3d.Graphics3D,
@@ -59,6 +58,9 @@ public class Graphics implements
 
 	public static final int SOLID = 0;
 	public static final int DOTTED = 1;
+
+	// Instance static tracker untuk akses mudah dari MicroActivity
+	private static Graphics currentInstance;
 
 	private final Canvas canvas;
 	private final Image image;
@@ -81,11 +83,10 @@ public class Graphics implements
 	private com.mascotcapsule.micro3d.v3.Graphics3D g3d;
 
 	// ===== TEXT DUMPING & TRANSLATION FEATURE =====
-	private boolean textDumpEnabled = true; // Langsung aktif di background
-	private final Map<String, String> translations = new HashMap<>(); // Tempat menampung translation.json
-	private final Set<String> dumpedTexts = new HashSet<>(); // Track teks unik untuk dump.json
+	private boolean textDumpEnabled = true;
+	private final Map<String, String> translations = new HashMap<>();
+	private final Set<String> dumpedTexts = new HashSet<>();
 	
-	// Configuration
 	private int maxTextWidth = 150;
 	private boolean autoScaleFontForLongText = true;
 	private float minFontScale = 0.7f;
@@ -100,6 +101,12 @@ public class Graphics implements
 		fillPaint.setStyle(Paint.Style.FILL);
 		drawPaint.setAntiAlias(false);
 		fillPaint.setAntiAlias(false);
+
+		currentInstance = this;
+	}
+
+	public static Graphics getCurrentInstance() {
+		return currentInstance;
 	}
 
 	public void reset(float cl, float ct, float cr, float cb) {
@@ -323,7 +330,6 @@ public class Graphics implements
 		String originalText = new String(data, offset, length);
 		String textToDraw = originalText;
 
-		// 1. Cek translation map jika ada
 		if (translations.containsKey(originalText)) {
 			textToDraw = translations.get(originalText);
 		}
@@ -351,7 +357,6 @@ public class Graphics implements
 		paint.setColor(fillPaint.getColor());
 		canvas.drawText(textToDraw.toCharArray(), 0, textToDraw.length(), x, ly, paint);
 
-		// 2. Dump jika belum ada di translation & belum di-dump
 		if (textDumpEnabled) {
 			if (!translations.containsKey(originalText) && !dumpedTexts.contains(originalText)) {
 				dumpedTexts.add(originalText);
@@ -363,7 +368,6 @@ public class Graphics implements
 		if (text == null) return;
 		String originalText = text;
 		
-		// 1. Load dari translation.json jika ada
 		if (translations.containsKey(originalText)) {
 			text = translations.get(originalText);
 		} else {
@@ -403,7 +407,6 @@ public class Graphics implements
 		
 		canvas.drawText(text, x, ly, paint);
 
-		// 2. Dump teks mentah asli jika belum ter-translate & belum di-dump
 		if (textDumpEnabled) {
 			if (!translations.containsKey(originalText) && !dumpedTexts.contains(originalText)) {
 				dumpedTexts.add(originalText);
@@ -678,7 +681,7 @@ public class Graphics implements
 
 			JSONObject textsObj = new JSONObject();
 			for (String text : dumpedTexts) {
-				textsObj.put(text, ""); // Key: teks asli, Value: string kosong
+				textsObj.put(text, "");
 			}
 			root.put("texts", textsObj);
 
