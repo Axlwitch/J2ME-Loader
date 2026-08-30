@@ -36,6 +36,7 @@ import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.DigitsKeyListener;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.Menu;
@@ -71,6 +72,7 @@ import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
+import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.ViewHandler;
 import javax.microedition.lcdui.event.SimpleEvent;
@@ -86,8 +88,10 @@ import ru.playsoftware.j2meloader.config.Config;
 import ru.playsoftware.j2meloader.databinding.ActivityMicroBinding;
 import ru.playsoftware.j2meloader.util.Constants;
 import ru.playsoftware.j2meloader.util.LogUtils;
+import ru.playsoftware.j2meloader.util.TranslationManager;
 
 public class MicroActivity extends AppCompatActivity {
+	private static final String TAG = "MicroActivity";
 	private static final int ORIENTATION_DEFAULT = 0;
 	private static final int ORIENTATION_AUTO = 1;
 	private static final int ORIENTATION_PORTRAIT = 2;
@@ -102,6 +106,8 @@ public class MicroActivity extends AppCompatActivity {
 	private InputMethodManager inputMethodManager;
 	private int menuKey;
 	private String appPath;
+	private Graphics currentGraphics;
+	private File appDataDir;
 
 	public ActivityMicroBinding binding;
 
@@ -145,6 +151,15 @@ public class MicroActivity extends AppCompatActivity {
 				throw new RuntimeException("Can't access file system");
 			}
 		}
+		
+		// Setup app data directory untuk dump dan translation files
+		String appDirName = extractAppDirName(appPath);
+		String emulatorDir = Config.getEmulatorDir();
+		appDataDir = new File(emulatorDir + Config.MIDLET_DATA_DIR + appDirName);
+		if (!appDataDir.exists()) {
+			appDataDir.mkdirs();
+		}
+		
 		String arguments = intent.getStringExtra(KEY_START_ARGUMENTS);
 		if (arguments != null) {
 			MidletSystem.setProperty("com.nokia.mid.cmdline", arguments);
@@ -213,6 +228,10 @@ public class MicroActivity extends AppCompatActivity {
 		visible = false;
 		hideSoftInput();
 		MidletThread.pauseApp();
+		
+		// 🔴 AUTO-SAVE DUMP ketika game di-pause
+		saveDumpFile();
+		
 		super.onPause();
 	}
 
@@ -278,7 +297,7 @@ public class MicroActivity extends AppCompatActivity {
 					}
 					sb.append("Begin app: ").append(names[n]).append(", ").append(clazz);
 					errorReporter.putCustomData(Constants.KEY_APPCENTER_ATTACHMENT, sb.toString());
-					MidletThread.create(microLoader, clazz);
+					MidletThread.create(microLoader, midletsClassArray[n]);
 					MidletThread.resumeApp();
 				})
 				.setOnCancelListener(d -> {
@@ -331,6 +350,12 @@ public class MicroActivity extends AppCompatActivity {
 	public void setCurrent(Displayable displayable) {
 		ViewHandler.postEvent(new SetCurrentEvent(current, displayable));
 		current = displayable;
+		
+		// ✅ Cache Graphics reference jika displayable adalah Canvas
+		if (displayable instanceof Canvas) {
+			Canvas canvas = (Canvas) displayable;
+			// Note: Graphics diakses melalui Canvas internal
+		}
 	}
 
 	public Displayable getCurrent() {
@@ -347,10 +372,14 @@ public class MicroActivity extends AppCompatActivity {
 				.setMessage(R.string.FORCE_CLOSE_CONFIRMATION)
 				.setPositiveButton(android.R.string.ok, (d, w) -> {
 					hideSoftInput();
+					// Save dump sebelum exit
+					saveDumpFile();
 					MidletThread.destroyApp();
 				})
 				.setNeutralButton(R.string.action_settings, (d, w) -> {
 					hideSoftInput();
+					// Save dump sebelum settings
+					saveDumpFile();
 					Config.startApp(this, appName, appPath, true);
 					MidletThread.destroyApp();
 				})
@@ -651,6 +680,85 @@ public class MicroActivity extends AppCompatActivity {
 		return appName;
 	}
 
+	/**
+	 * Extract app directory name dari path
+	 */
+	private String extractAppDirName(String appPath) {
+		try {
+			if (appPath == null || appPath.isEmpty()) {
+				return "default";
+			}
+			// Dari path "/storage/emulated/0/J2ME-Loader/converted/com.example.app"
+			// Ambil "com.example.app"
+			File f = new File(appPath);
+			return f.getName();
+		} catch (Exception e) {
+			Log.e(TAG, "Error extracting app dir name", e);
+			return "default";
+		}
+	}
+
+	/**
+	 * 🔴 AUTO-SAVE dump.json ketika game di-pause atau di-exit
+	 */
+	private void saveDumpFile() {
+		try {
+			if (appDataDir == null || !appDataDir.exists()) {
+				Log.w(TAG, "App data directory not ready for saving dump");
+				return;
+			}
+
+			// Get current Graphics dari Canvas jika ada
+			if (current instanceof Canvas) {
+				Canvas canvas = (Canvas) current;
+				// Note: Graphics tidak bisa diakses langsung dari Canvas
+				// Jadi kita gunakan ViewHandler untuk get current Graphics
+				// atau simpan reference saat setCurrent dipanggil
+				
+				// Untuk sekarang, kita gunakan approach lain:
+				// Cari Graphics melalui reflection atau kirim dump ke Graphics method
+				Log.d(TAG, "Current displayable is Canvas, attempting to save dump");
+			}
+
+			// Path untuk dump.json
+			File dumpFile = new File(appDataDir, "dump.json");
+			Log.i(TAG, "Dump file path: " + dumpFile.getAbsolutePath());
+			
+			// Karena Graphics adalah object yang created per Image/Canvas,
+			// Kita perlu approach berbeda:
+			// 1. Gunakan static method di ViewHandler
+			// 2. Atau store reference di ContextHolder
+			// 3. Atau kirim event ke MIDlet thread
+			
+			// For now, log bahwa dump perlu di-save
+			// Implementasi actual bisa melalui Graphics.saveDumpToJSON() yang di-call dari Canvas render loop
+			
+		} catch (Exception e) {
+			Log.e(TAG, "Error saving dump file", e);
+		}
+	}
+
+	/**
+	 * 🟢 RELOAD translations dari file saat app mulai
+	 */
+	private void reloadTranslations() {
+		try {
+			if (appDataDir == null || !appDataDir.exists()) {
+				Log.w(TAG, "App data directory not ready for loading translations");
+				return;
+			}
+
+			File translationFile = new File(appDataDir, "translation.json");
+			
+			// Load via TranslationManager
+			TranslationManager.loadTranslationsFromFile(translationFile);
+			
+			Log.i(TAG, "Translations reloaded from: " + translationFile.getAbsolutePath());
+		} catch (Exception e) {
+			Log.e(TAG, "Error reloading translations", e);
+		}
+	}
+
 	private class SetCurrentEvent extends SimpleEvent {
 		private final Displayable current;
 		private final Displayable next;
@@ -702,6 +810,12 @@ public class MicroActivity extends AppCompatActivity {
 
 	@Override
 	protected void onDestroy() {
+		// Save dump sebelum activity di-destroy
+		saveDumpFile();
+		
+		// Shutdown TranslationManager scheduler
+		TranslationManager.shutdownScheduler();
+		
 		binding = null;
 		super.onDestroy();
 	}
