@@ -711,10 +711,11 @@ public class MicroActivity extends AppCompatActivity {
 			return "default";
 		}
 	}
-
+     
 	/**
 	 * 🔴 AUTO-SAVE dump.json ketika game di-pause atau di-exit
 	 */
+	/*
 	private void saveDumpFile() {
 		if (appDataDir == null) {
 			Log.w(TAG, "App data directory not set");
@@ -732,7 +733,7 @@ public class MicroActivity extends AppCompatActivity {
 					g.saveDumpToJSON(dumpFile);
 					Log.i(TAG, "✅ Dump saved to: " + dumpFile.getAbsolutePath());
 				}
-				*/
+				
 			   // Sementara disable - perlu implementasi ulang
                Log.d(TAG, "Save dump temporarily disabled");
 			}
@@ -740,6 +741,7 @@ public class MicroActivity extends AppCompatActivity {
 			Log.e(TAG, "Error saving dump", e);
 		}
 	}
+  */
 
 	private class SetCurrentEvent extends SimpleEvent {
 		private final Displayable current;
