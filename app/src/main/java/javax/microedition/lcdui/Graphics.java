@@ -33,7 +33,6 @@ import android.os.Build;
 import android.util.Log;
 
 import com.mascotcapsule.micro3d.v3.Graphics3D;
-import org.json.JSONArray;
 import org.json.JSONObject;
 import ru.playsoftware.j2meloader.util.TranslationManager;
 import java.io.File;
@@ -78,7 +77,7 @@ public class Graphics implements
 	private com.mascotcapsule.micro3d.v3.Graphics3D g3d;
 
 	// Text dumping feature
-	private List<TextDumpEntry> textDumpEntries = new ArrayList<>();
+	private StringBuilder textDumpBuilder = new StringBuilder();
 	private boolean textDumpEnabled = false;
 
 	// Inner class untuk menyimpan entry text
@@ -89,29 +88,28 @@ public class Graphics implements
 		public int anchor;
 		public int color;
 		public long timestamp;
+		public String renderType; // "direct", "glyph", "chars"
 
-		public TextDumpEntry(String text, int x, int y, int anchor, int color) {
+		public TextDumpEntry(String text, int x, int y, int anchor, int color, String renderType) {
 			this.text = text;
 			this.x = x;
 			this.y = y;
 			this.anchor = anchor;
 			this.color = color;
+			this.renderType = renderType;
 			this.timestamp = System.currentTimeMillis();
 		}
 
-		public JSONObject toJSON() {
-			JSONObject obj = new JSONObject();
-			try {
-				obj.put("text", this.text);
-				obj.put("x", this.x);
-				obj.put("y", this.y);
-				obj.put("anchor", this.anchor);
-				obj.put("color", String.format("#%08X", this.color));
-				obj.put("timestamp", this.timestamp);
-			} catch (Exception e) {
-				Log.e("TextDumpEntry", "Error converting to JSON", e);
-			}
-			return obj;
+		public String toKeyValueFormat() {
+			return String.format("\"%s\"=\"%s\"", this.text, this.renderType);
+		}
+
+		public String toDetailedFormat() {
+			return String.format(
+				"  \"text\"=\"%s\", \"x\"=\"%d\", \"y\"=\"%d\", \"anchor\"=\"%d\", \"color\"=\"%s\", \"type\"=\"%s\", \"time\"=\"%d\"",
+				this.text, this.x, this.y, this.anchor,
+				String.format("%08X", this.color), this.renderType, this.timestamp
+			);
 		}
 	}
 
@@ -371,7 +369,7 @@ public class Graphics implements
 		// Dump text jika enabled
 		if (textDumpEnabled) {
 			String text = new String(data, offset, length);
-			addTextDumpEntry(text, x, y, anchor);
+			addTextDumpEntry(text, x, y, anchor, "chars");
 		}
 	}
 
@@ -403,7 +401,7 @@ public class Graphics implements
 
 		// Dump text jika enabled
 		if (textDumpEnabled) {
-			addTextDumpEntry(text, x, y, anchor);
+			addTextDumpEntry(text, x, y, anchor, "direct");
 		}
 	}
 
@@ -439,6 +437,11 @@ public class Graphics implements
 	public void drawRegion(Image image, int x_src, int y_src, int width, int height,
 						   int transform, int x_dst, int y_dst, int anchor) {
 		if (width <= 0 || height <= 0) return;
+
+		// Deteksi apakah ini adalah glyph rendering (small region dari font atlas)
+		if (textDumpEnabled && isLikelyGlyph(width, height)) {
+			recordGlyphRender(image, x_src, y_src, width, height, x_dst, y_dst);
+		}
 
 		Rect srcR = rect;
 		RectF dstR = rectF;
@@ -639,82 +642,97 @@ public class Graphics implements
 	// ===== TEXT DUMPING FEATURE =====
 
 	/**
+	 * Deteksi apakah region adalah glyph (kecil, untuk bitmap font)
+	 */
+	private boolean isLikelyGlyph(int width, int height) {
+		// Glyph biasanya kecil: 8-32 pixel
+		return width >= 8 && width <= 64 && height >= 8 && height <= 64;
+	}
+
+	/**
+	 * Record glyph rendering untuk dump
+	 */
+	private void recordGlyphRender(Image image, int x_src, int y_src, int width, int height,
+									int x_dst, int y_dst) {
+		// Catat posisi glyph sebagai placeholder "[GLYPH]"
+		addTextDumpEntry(String.format("[GLYPH:%dx%d@%d,%d]", width, height, x_src, y_src),
+				x_dst, y_dst, Graphics.LEFT, "glyph");
+	}
+
+	/**
 	 * Mengaktifkan atau menonaktifkan text dumping
 	 */
 	public void setTextDumpEnabled(boolean enabled) {
 		this.textDumpEnabled = enabled;
 		if (!enabled) {
-			textDumpEntries.clear();
+			textDumpBuilder.setLength(0);
 		}
 	}
 
 	/**
-	 * Menambahkan entry text ke dump list
+	 * Menambahkan entry text ke dump
 	 */
-	private void addTextDumpEntry(String text, int x, int y, int anchor) {
-		if (text != null && !text.isEmpty()) {
-			textDumpEntries.add(new TextDumpEntry(text, x, y, anchor, fillPaint.getColor()));
+	private void addTextDumpEntry(String text, int x, int y, int anchor, String renderType) {
+		if (text != null && !text.isEmpty() && textDumpBuilder.length() < 50000) { // Limit size
+			if (textDumpBuilder.length() > 0) {
+				textDumpBuilder.append("\n");
+			}
+			textDumpBuilder.append(String.format("\"%s\"=\"%s\"", text, renderType));
 		}
 	}
 
 	/**
-	 * Menyimpan text dump ke file JSON
-	 */
-	public void saveTextDumpToJSON(File outputFile) {
-		if (textDumpEntries.isEmpty()) {
-			Log.w("Graphics", "Text dump entries is empty");
-			return;
-		}
-
-		try {
-			JSONObject root = new JSONObject();
-			JSONArray textArray = new JSONArray();
-
-			for (TextDumpEntry entry : textDumpEntries) {
-				textArray.put(entry.toJSON());
-			}
-
-			root.put("version", "1.0");
-			root.put("timestamp", System.currentTimeMillis());
-			root.put("textCount", textDumpEntries.size());
-			root.put("texts", textArray);
-
-			// Write to file
-			try (FileWriter writer = new FileWriter(outputFile)) {
-				writer.write(root.toString(2)); // Pretty print with 2 space indentation
-			}
-
-			Log.i("Graphics", "Text dump saved to: " + outputFile.getAbsolutePath());
-		} catch (IOException | org.json.JSONException e) {
-			Log.e("Graphics", "Error saving text dump to JSON", e);
-		}
-	}
-
-	/**
-	 * Menyimpan text dump ke file JSON dengan path string
+	 * Simpan text dump ke file dengan format key-value
+	 * Format: "text"="renderType"
 	 */
 	public void saveTextDumpToJSON(String filePath) {
 		saveTextDumpToJSON(new File(filePath));
 	}
 
 	/**
-	 * Mendapatkan list dari semua text entries
+	 * Simpan text dump ke file dengan format key-value
 	 */
-	public List<TextDumpEntry> getTextDumpEntries() {
-		return new ArrayList<>(textDumpEntries);
+	public void saveTextDumpToJSON(File outputFile) {
+		if (textDumpBuilder.length() == 0) {
+			Log.w("Graphics", "Text dump entries is empty");
+			return;
+		}
+
+		try {
+			try (FileWriter writer = new FileWriter(outputFile)) {
+				writer.write("{\n");
+				writer.write("  \"version\": \"1.0\",\n");
+				writer.write("  \"timestamp\": " + System.currentTimeMillis() + ",\n");
+				writer.write("  \"texts\": {\n");
+				writer.write("    " + textDumpBuilder.toString().replace("\n", "\n    "));
+				writer.write("\n  }\n");
+				writer.write("}\n");
+			}
+
+			Log.i("Graphics", "Text dump saved to: " + outputFile.getAbsolutePath());
+		} catch (IOException e) {
+			Log.e("Graphics", "Error saving text dump to JSON", e);
+		}
+	}
+
+	/**
+	 * Mendapatkan text dump content
+	 */
+	public String getTextDumpContent() {
+		return textDumpBuilder.toString();
 	}
 
 	/**
 	 * Menghapus semua text entries
 	 */
 	public void clearTextDumpEntries() {
-		textDumpEntries.clear();
+		textDumpBuilder.setLength(0);
 	}
 
 	/**
-	 * Mendapatkan jumlah text entries
+	 * Mendapatkan jumlah text entries (approximate)
 	 */
 	public int getTextDumpCount() {
-		return textDumpEntries.size();
+		return textDumpBuilder.toString().split("\n").length;
 	}
 }
