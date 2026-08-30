@@ -36,7 +36,6 @@ import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.DigitsKeyListener;
-import android.util.Log;
 import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.Menu;
@@ -72,7 +71,6 @@ import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
-import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.ViewHandler;
 import javax.microedition.lcdui.event.SimpleEvent;
@@ -88,10 +86,8 @@ import ru.playsoftware.j2meloader.config.Config;
 import ru.playsoftware.j2meloader.databinding.ActivityMicroBinding;
 import ru.playsoftware.j2meloader.util.Constants;
 import ru.playsoftware.j2meloader.util.LogUtils;
-import ru.playsoftware.j2meloader.util.TranslationManager;
 
 public class MicroActivity extends AppCompatActivity {
-	private static final String TAG = "MicroActivity";
 	private static final int ORIENTATION_DEFAULT = 0;
 	private static final int ORIENTATION_AUTO = 1;
 	private static final int ORIENTATION_PORTRAIT = 2;
@@ -106,8 +102,6 @@ public class MicroActivity extends AppCompatActivity {
 	private InputMethodManager inputMethodManager;
 	private int menuKey;
 	private String appPath;
-	private File appDataDir;
-	private Graphics currentGraphics;
 
 	public ActivityMicroBinding binding;
 
@@ -151,19 +145,6 @@ public class MicroActivity extends AppCompatActivity {
 				throw new RuntimeException("Can't access file system");
 			}
 		}
-		
-		// Setup app data directory untuk dump dan translation files
-		appDataDir = getAppDataDir(appPath);
-		if (appDataDir != null && !appDataDir.exists()) {
-			appDataDir.mkdirs();
-		}
-		
-		// Load translations dari file jika ada
-		if (appDataDir != null) {
-			File translationFile = new File(appDataDir, "translation.json");
-			TranslationManager.loadTranslationsFromFile(translationFile);
-		}
-		
 		String arguments = intent.getStringExtra(KEY_START_ARGUMENTS);
 		if (arguments != null) {
 			MidletSystem.setProperty("com.nokia.mid.cmdline", arguments);
@@ -232,10 +213,6 @@ public class MicroActivity extends AppCompatActivity {
 		visible = false;
 		hideSoftInput();
 		MidletThread.pauseApp();
-		
-		// 🔴 AUTO-SAVE DUMP ketika game di-pause
-		saveDumpFile();
-		
 		super.onPause();
 	}
 
@@ -370,12 +347,10 @@ public class MicroActivity extends AppCompatActivity {
 				.setMessage(R.string.FORCE_CLOSE_CONFIRMATION)
 				.setPositiveButton(android.R.string.ok, (d, w) -> {
 					hideSoftInput();
-					saveDumpFile(); // Save sebelum exit
 					MidletThread.destroyApp();
 				})
 				.setNeutralButton(R.string.action_settings, (d, w) -> {
 					hideSoftInput();
-					saveDumpFile(); // Save sebelum settings
 					Config.startApp(this, appName, appPath, true);
 					MidletThread.destroyApp();
 				})
@@ -502,6 +477,7 @@ public class MicroActivity extends AppCompatActivity {
 		} else if (id == R.id.action_limit_fps) {
 			showLimitFpsDialog();
 		} else if (ContextHolder.getVk() != null) {
+			// Handled only when virtual keyboard is enabled
 			handleVkOptions(id);
 		}
 		return true;
@@ -662,6 +638,7 @@ public class MicroActivity extends AppCompatActivity {
 			AdapterContextMenuInfo info = (AdapterContextMenuInfo) item.getMenuInfo();
 			((List) current).contextMenuItemSelected(item, info.position);
 		}
+
 		return super.onContextItemSelected(item);
 	}
 
@@ -673,46 +650,6 @@ public class MicroActivity extends AppCompatActivity {
 	public String getAppName() {
 		return appName;
 	}
-
-	/**
-	 * Mendapatkan directory untuk data aplikasi (dump, translations, dll)
-	 */
-	private File getAppDataDir(String appPath) {
-		try {
-			// Format: /storage/emulated/0/J2ME-Loader/app_data/[app_name]/
-			File baseDir = new File(Config.getEmulatorDir() + Config.MIDLET_DATA_DIR);
-			if (!baseDir.exists()) {
-				baseDir.mkdirs();
-			}
-			
-			String appDirName = extractAppDirName(appPath);
-			File appDir = new File(baseDir, appDirName);
-			if (!appDir.exists()) {
-				appDir.mkdirs();
-			}
-			return appDir;
-		} catch (Exception e) {
-			Log.e(TAG, "Error creating app data directory", e);
-			return null;
-		}
-	}
-
-	/**
-	 * Extract app directory name dari path
-	 */
-	private String extractAppDirName(String appPath) {
-		try {
-			if (appPath == null || appPath.isEmpty()) {
-				return "default";
-			}
-			File f = new File(appPath);
-			return f.getName();
-		} catch (Exception e) {
-			return "default";
-		}
-	}
-     
-	
 
 	private class SetCurrentEvent extends SimpleEvent {
 		private final Displayable current;
@@ -765,12 +702,6 @@ public class MicroActivity extends AppCompatActivity {
 
 	@Override
 	protected void onDestroy() {
-		// 🔴 SAVE DUMP sebelum activity di-destroy
-		saveDumpFile();
-		
-		// Shutdown TranslationManager scheduler
-		TranslationManager.shutdownScheduler();
-		
 		binding = null;
 		super.onDestroy();
 	}
@@ -785,4 +716,4 @@ public class MicroActivity extends AppCompatActivity {
 			LocationProviderImpl.permissionResult = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
 		}
 	}
-	}
+}
