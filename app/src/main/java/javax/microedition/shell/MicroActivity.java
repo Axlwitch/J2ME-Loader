@@ -723,6 +723,7 @@ public class MicroActivity extends AppCompatActivity {
 		
 		try {
 			// Dapatkan Graphics dari current Canvas
+			/*
 			if (current instanceof Canvas) {
 				Canvas canvas = (Canvas) current;
 				Graphics g = canvas.getGraphics();
@@ -731,6 +732,9 @@ public class MicroActivity extends AppCompatActivity {
 					g.saveDumpToJSON(dumpFile);
 					Log.i(TAG, "✅ Dump saved to: " + dumpFile.getAbsolutePath());
 				}
+				*/
+			   // Sementara disable - perlu implementasi ulang
+               Log.d(TAG, "Save dump temporarily disabled");
 			}
 		} catch (Exception e) {
 			Log.e(TAG, "Error saving dump", e);
