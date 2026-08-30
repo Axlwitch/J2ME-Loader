@@ -7,16 +7,18 @@ import java.io.FileWriter;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class TranslationManager {
     private static final Map<String, String> translationMap = new HashMap<>();
-    private static final Map<String, String> dumpedStrings = new HashMap<>();
+    // Use ConcurrentHashMap to avoid ConcurrentModificationException from scheduler vs writer
+    private static final Map<String, String> dumpedStrings = new ConcurrentHashMap<>();
     private static File jsonFile;
     private static boolean isDumpMode = true; // Set true untuk menyimpan teks baru ke JSON
-    private static boolean hasNewDataToSave = false;
+    private static volatile boolean hasNewDataToSave = false;
     private static ScheduledExecutorService saveScheduler;
 
     public static void init(File gameDir) {
@@ -57,8 +59,8 @@ public class TranslationManager {
     private static synchronized void saveDumpInternal() {
         if (!isDumpMode || !hasNewDataToSave || jsonFile == null) return;
         try {
+            // Build JSON from current dumpedStrings snapshot
             JSONObject json = new JSONObject();
-            // Salurkan hasil dump dan terjemahan ke JSON
             for (Map.Entry<String, String> entry : dumpedStrings.entrySet()) {
                 json.put(entry.getKey(), entry.getValue());
             }
@@ -68,6 +70,14 @@ public class TranslationManager {
             hasNewDataToSave = false;
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    // Call from lifecycle when the app/game is stopping to avoid thread leak
+    public static void shutdownScheduler() {
+        if (saveScheduler != null && !saveScheduler.isShutdown()) {
+            saveScheduler.shutdownNow();
+            saveScheduler = null;
         }
     }
 
