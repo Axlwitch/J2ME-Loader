@@ -215,7 +215,6 @@ public class MicroActivity extends AppCompatActivity {
 		hideSoftInput();
 		MidletThread.pauseApp();
 		
-		// Auto-save dump saat aplikasi masuk background
 		saveDumpAutomatically();
 		
 		super.onPause();
@@ -337,11 +336,9 @@ public class MicroActivity extends AppCompatActivity {
 		ViewHandler.postEvent(new SetCurrentEvent(current, displayable));
 		current = displayable;
 		
-		// Auto Load translation.json ke Graphics ketika Canvas baru aktif
 		if (displayable instanceof Canvas) {
-			Canvas canvas = (Canvas) displayable;
-			Graphics g = canvas.getGraphics();
-			if (g != null) {
+			Graphics g = Graphics.getCurrentInstance();
+			if (g != null && appPath != null) {
 				File translationFile = new File(appPath, "translation.json");
 				if (translationFile.exists()) {
 					g.loadTranslationsFromFile(translationFile);
@@ -496,7 +493,6 @@ public class MicroActivity extends AppCompatActivity {
 		} else if (id == R.id.action_limit_fps) {
 			showLimitFpsDialog();
 		} else if (ContextHolder.getVk() != null) {
-			// Handled only when virtual keyboard is enabled
 			handleVkOptions(id);
 		}
 		return true;
@@ -670,16 +666,12 @@ public class MicroActivity extends AppCompatActivity {
 		return appName;
 	}
 
-	// Internal helper untuk menyimpan dump secara otomatis di latar belakang
 	private void saveDumpAutomatically() {
 		try {
-			if (current instanceof Canvas) {
-				Canvas canvas = (Canvas) current;
-				Graphics g = canvas.getGraphics();
-				if (g != null && appPath != null) {
-					File dumpFile = new File(appPath, "dump.json");
-					g.saveDumpToJSON(dumpFile);
-				}
+			Graphics g = Graphics.getCurrentInstance();
+			if (g != null && appPath != null) {
+				File dumpFile = new File(appPath, "dump.json");
+				g.saveDumpToJSON(dumpFile);
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -737,7 +729,6 @@ public class MicroActivity extends AppCompatActivity {
 
 	@Override
 	protected void onDestroy() {
-		// Auto-save dump saat aplikasi ditutup
 		saveDumpAutomatically();
 		
 		binding = null;
