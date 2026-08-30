@@ -33,13 +33,10 @@ import android.os.Build;
 import android.util.Log;
 
 import com.mascotcapsule.micro3d.v3.Graphics3D;
-import org.json.JSONObject;
 import ru.playsoftware.j2meloader.util.TranslationManager;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 public class Graphics implements
 		com.vodafone.v10.graphics.j3d.Graphics3D,
@@ -79,39 +76,6 @@ public class Graphics implements
 	// Text dumping feature
 	private StringBuilder textDumpBuilder = new StringBuilder();
 	private boolean textDumpEnabled = false;
-
-	// Inner class untuk menyimpan entry text
-	public static class TextDumpEntry {
-		public String text;
-		public int x;
-		public int y;
-		public int anchor;
-		public int color;
-		public long timestamp;
-		public String renderType; // "direct", "glyph", "chars"
-
-		public TextDumpEntry(String text, int x, int y, int anchor, int color, String renderType) {
-			this.text = text;
-			this.x = x;
-			this.y = y;
-			this.anchor = anchor;
-			this.color = color;
-			this.renderType = renderType;
-			this.timestamp = System.currentTimeMillis();
-		}
-
-		public String toKeyValueFormat() {
-			return String.format("\"%s\"=\"%s\"", this.text, this.renderType);
-		}
-
-		public String toDetailedFormat() {
-			return String.format(
-				"  \"text\"=\"%s\", \"x\"=\"%d\", \"y\"=\"%d\", \"anchor\"=\"%d\", \"color\"=\"%s\", \"type\"=\"%s\", \"time\"=\"%d\"",
-				this.text, this.x, this.y, this.anchor,
-				String.format("%08X", this.color), this.renderType, this.timestamp
-			);
-		}
-	}
 
 	Graphics(Image image) {
 		this.image = image;
@@ -653,7 +617,7 @@ public class Graphics implements
 	 * Record glyph rendering untuk dump
 	 */
 	private void recordGlyphRender(Image image, int x_src, int y_src, int width, int height,
-									int x_dst, int y_dst) {
+								   int x_dst, int y_dst) {
 		// Catat posisi glyph sebagai placeholder "[GLYPH]"
 		addTextDumpEntry(String.format("[GLYPH:%dx%d@%d,%d]", width, height, x_src, y_src),
 				x_dst, y_dst, Graphics.LEFT, "glyph");
