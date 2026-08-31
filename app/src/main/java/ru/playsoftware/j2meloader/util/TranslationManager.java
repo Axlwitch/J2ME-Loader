@@ -1,15 +1,13 @@
 package ru.playsoftware.j2meloader.util;
 
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.awt.Color;
-import java.awt.Font;
-import java.awt.FontMetrics;
-import java.awt.Graphics;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
-import java.awt.geom.AffineTransform;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -30,7 +28,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 // ==========================================
-// 1. CLASS UTAMA (Public, nama file harus TranslationManager.java)
+// 1. CLASS UTAMA (TranslationManager)
 // ==========================================
 public class TranslationManager {
     private static final Map<String, String> translationMap = new ConcurrentHashMap<>();
@@ -320,7 +318,7 @@ public class TranslationManager {
                 }
             }
         } catch (Exception e) {
-            // Error koneksi diabaikan agar thread UI tidak terganggu
+            // Error koneksi diabaikan
         } finally {
             if (conn != null) {
                 conn.disconnect();
@@ -336,91 +334,98 @@ public class TranslationManager {
 }
 
 // ==========================================
-// 2. CLASS PENDUKUNG RENDER (Package-Private)
+// 2. CLASS GRAPHICS UTILS (VERSI ANDROID NATIVE CANVAS/PAINT)
 // ==========================================
 class GraphicsUtils {
 
-    private static final String DEFAULT_FONT_NAME = "Arial";
-    private static final int DEFAULT_STYLE = Font.BOLD;
-
-    public static void drawStringIntercepted(Graphics g, String str, int x, int y, int anchor) {
-        if (str == null || str.trim().isEmpty()) return;
+    /**
+     * Menggambar string pada Android Canvas dengan Auto-Scaling, Text Shadow, Arial Bold, dan Line Height.
+     */
+    public static void drawStringIntercepted(Canvas canvas, Paint paint, String str, float x, float y, int anchor) {
+        if (str == null || str.trim().isEmpty() || canvas == null || paint == null) return;
 
         String teksBaru = TranslationManager.processString(str);
 
-        Graphics2D g2d = (Graphics2D) g.create();
+        // Backup state paint asli
+        Typeface oldTypeface = paint.getTypeface();
+        boolean oldAntiAlias = paint.isAntiAlias();
+        boolean oldSubpixel = paint.isSubpixelText();
+        float textSize = paint.getTextSize() > 0 ? paint.getTextSize() : 13f;
+
+        // Terapkan Arial Bold & Anti-Aliasing (Meniru CSS -webkit-font-smoothing)
+        paint.setTypeface(Typeface.create("Arial", Typeface.BOLD));
+        paint.setAntiAlias(true);
+        paint.setSubpixelText(true);
+
         try {
-            g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-            g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
-
-            Font fontAsli = g2d.getFont();
-            int fontSize = (fontAsli != null) ? fontAsli.getSize() : 13;
-            Font boldArial = new Font(DEFAULT_FONT_NAME, DEFAULT_STYLE, fontSize);
-            g2d.setFont(boldArial);
-
             if (teksBaru.contains("\n")) {
-                double lineHeight = fontSize * 1.6;
+                float lineHeight = textSize * 1.6f; // Line-Height 1.6
                 String[] baris = teksBaru.split("\n");
                 for (int i = 0; i < baris.length; i++) {
-                    int nextY = Math.round((float) (y + (i * lineHeight)));
-                    renderAndScaleText(g2d, str, baris[i], x, nextY, anchor);
+                    float nextY = y + (i * lineHeight);
+                    renderAndScaleText(canvas, paint, str, baris[i], x, nextY, anchor);
                 }
             } else {
-                renderAndScaleText(g2d, str, teksBaru, x, y, anchor);
+                renderAndScaleText(canvas, paint, str, teksBaru, x, y, anchor);
             }
-
         } finally {
-            g2d.dispose();
+            // Restore state paint bawaan
+            paint.setTypeface(oldTypeface);
+            paint.setAntiAlias(oldAntiAlias);
+            paint.setSubpixelText(oldSubpixel);
         }
     }
 
-    private static void renderAndScaleText(Graphics2D g2d, String teksAsli, String teksRender, int x, int y, int anchor) {
-        FontMetrics fm = g2d.getFontMetrics();
-        
-        int widthAsli = fm.stringWidth(teksAsli);
-        int widthBaru = fm.stringWidth(teksRender);
+    private static void renderAndScaleText(Canvas canvas, Paint paint, String teksAsli, String teksRender, float x, float y, int anchor) {
+        float widthAsli = paint.measureText(teksAsli);
+        float widthBaru = paint.measureText(teksRender);
 
-        int drawX = alignX(x, widthAsli, anchor);
-        int drawY = alignY(y, fm, anchor);
+        Paint.FontMetrics fm = paint.getFontMetrics();
 
-        AffineTransform oldTransform = g2d.getTransform();
+        float drawX = alignX(x, widthAsli, anchor);
+        float drawY = alignY(y, fm, anchor);
 
         boolean butuhScaling = !teksRender.equals(teksAsli) && (widthBaru > widthAsli) && (widthBaru > 0);
 
-        if (butuhScaling) {
-            double scaleX = (double) widthAsli / widthBaru;
+        canvas.save();
+        try {
+            if (butuhScaling) {
+                float scaleX = widthAsli / widthBaru;
 
-            g2d.translate(drawX, drawY);
-            g2d.scale(scaleX, 1.0);
+                canvas.translate(drawX, drawY);
+                canvas.scale(scaleX, 1.0f);
 
-            drawShadowAndText(g2d, teksRender, 0, 0);
-
-            g2d.setTransform(oldTransform);
-        } else {
-            drawShadowAndText(g2d, teksRender, drawX, drawY);
+                drawShadowAndText(canvas, paint, teksRender, 0, 0);
+            } else {
+                drawShadowAndText(canvas, paint, teksRender, drawX, drawY);
+            }
+        } finally {
+            canvas.restore();
         }
     }
 
-    private static void drawShadowAndText(Graphics2D g2d, String text, int x, int y) {
-        Color colorUtama = g2d.getColor();
+    private static void drawShadowAndText(Canvas canvas, Paint paint, String text, float x, float y) {
+        int originalColor = paint.getColor();
 
-        g2d.setColor(new Color(0, 0, 0, 140));
-        g2d.drawString(text, x + 1, y + 1);
+        // 1. Text Shadow Hitam Transparan: 1px 1px offset
+        paint.setColor(Color.argb(140, 0, 0, 0));
+        canvas.drawText(text, x + 1f, y + 1f, paint);
 
-        g2d.setColor(colorUtama);
-        g2d.drawString(text, x, y);
+        // 2. Teks Utama
+        paint.setColor(originalColor);
+        canvas.drawText(text, x, y, paint);
     }
 
-    private static int alignX(int x, int width, int anchor) {
-        if ((anchor & 1) != 0) return x - (width / 2);
-        if ((anchor & 8) != 0) return x - width;
-        return x;
+    private static float alignX(float x, float width, int anchor) {
+        if ((anchor & 1) != 0) return x - (width / 2f); // HCENTER
+        if ((anchor & 8) != 0) return x - width;         // RIGHT
+        return x;                                        // LEFT
     }
 
-    private static int alignY(int y, FontMetrics fm, int anchor) {
-        if ((anchor & 16) != 0) return y + fm.getAscent();
-        if ((anchor & 32) != 0) return y + (fm.getAscent() / 2);
-        if ((anchor & 64) != 0) return y - fm.getDescent();
-        return y;
+    private static float alignY(float y, Paint.FontMetrics fm, int anchor) {
+        if ((anchor & 16) != 0) return y - fm.ascent;                  // TOP
+        if ((anchor & 32) != 0) return y - (fm.ascent + fm.descent)/2f; // VCENTER
+        if ((anchor & 64) != 0) return y - fm.descent;                 // BOTTOM
+        return y;                                                      // Baseline default
     }
 }
