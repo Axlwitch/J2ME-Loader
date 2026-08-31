@@ -20,14 +20,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class TranslationManager {
-    // Memory Cache
     private static final Map<String, String> translationMap = new ConcurrentHashMap<>();
     private static final Map<String, String> reverseTranslationMap = new ConcurrentHashMap<>();
     private static final Map<String, String> dumpedStrings = new ConcurrentHashMap<>();
     
-    // State Tracking dari logika JS: sedangDiterjemahkan & isOfflineMode
     private static final Map<String, Boolean> sedangDiterjemahkan = new ConcurrentHashMap<>();
-    private static final AtomicBoolean isOfflineMode = new AtomicBoolean(false);
     
     private static File translationFile;
     private static File dumpFile;
@@ -36,8 +33,11 @@ public class TranslationManager {
     private static boolean autoTranslateEnabled = true;
     
     private static final AtomicBoolean hasNewDataToSave = new AtomicBoolean(false);
+    private static final AtomicBoolean hasNewTranslationToSave = new AtomicBoolean(false);
+    
     private static ScheduledExecutorService saveScheduler;
-    private static final ExecutorService translateExecutor = Executors.newFixedThreadPool(3);
+    private static ScheduledExecutorService translationSaveScheduler;
+    private static final ExecutorService translateExecutor = Executors.newSingleThreadExecutor();
 
     public static void init(File gameDir) {
         if (gameDir == null) return;
@@ -48,10 +48,14 @@ public class TranslationManager {
         loadTranslation();
         loadExistingDump();
 
-        // Menyimpan dump.json secara teratur (Interval 500ms sesuai referensi window.__dumpTimer)
         if (isDumpMode && saveScheduler == null) {
             saveScheduler = Executors.newSingleThreadScheduledExecutor();
             saveScheduler.scheduleWithFixedDelay(TranslationManager::saveDumpInternal, 500, 500, TimeUnit.MILLISECONDS);
+        }
+
+        if (translationSaveScheduler == null) {
+            translationSaveScheduler = Executors.newSingleThreadScheduledExecutor();
+            translationSaveScheduler.scheduleWithFixedDelay(TranslationManager::saveTranslationInternal, 1000, 1000, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -103,7 +107,6 @@ public class TranslationManager {
         }
     }
 
-    // saveDumpInternal menggunakan konsep atomic swap (.tmp) agar data tidak corrupt saat dipaksa save
     public static void saveDumpInternal() {
         if (!isDumpMode || !hasNewDataToSave.compareAndSet(true, false) || dumpFile == null) return;
         try {
@@ -127,27 +130,53 @@ public class TranslationManager {
         }
     }
 
+    public static void saveTranslationInternal() {
+        if (!hasNewTranslationToSave.compareAndSet(true, false) || translationFile == null) return;
+        try {
+            JSONObject json = new JSONObject();
+            for (Map.Entry<String, String> entry : translationMap.entrySet()) {
+                json.put(entry.getKey(), entry.getValue());
+            }
+
+            File tempFile = new File(translationFile.getAbsolutePath() + ".tmp");
+            try (FileWriter writer = new FileWriter(tempFile)) {
+                writer.write(json.toString(4));
+            }
+            
+            if (tempFile.exists()) {
+                if (translationFile.exists()) translationFile.delete();
+                tempFile.renameTo(translationFile);
+            }
+        } catch (Exception e) {
+            hasNewTranslationToSave.set(true);
+            e.printStackTrace();
+        }
+    }
+
     public static void shutdownScheduler() {
-        saveDumpInternal(); // Eksekusi mirip event beforeunload / visibilitychange
+        saveDumpInternal();
+        saveTranslationInternal();
+
         if (saveScheduler != null && !saveScheduler.isShutdown()) {
             saveScheduler.shutdownNow();
             saveScheduler = null;
+        }
+        if (translationSaveScheduler != null && !translationSaveScheduler.isShutdown()) {
+            translationSaveScheduler.shutdownNow();
+            translationSaveScheduler = null;
         }
         if (translateExecutor != null && !translateExecutor.isShutdown()) {
             translateExecutor.shutdownNow();
         }
     }
 
-    // Logika Pemrosesan Teks (Pola dari `prosesText` JS)
     public static String processString(String original) {
         if (original == null) return original;
         
-        // Filter teks kosong, 1 karakter, atau angka murni
         if (original.isEmpty() || original.length() <= 1 || original.matches("^\\d+$")) {
             return original;
         }
 
-        // Tier 1: Cek apakah sudah ada di kamus
         if (translationMap.containsKey(original)) {
             if (dumpedStrings.containsKey(original)) {
                 dumpedStrings.remove(original);
@@ -156,20 +185,16 @@ public class TranslationManager {
             return translationMap.get(original);
         }
 
-        // Tier 2: Cegah dump jika string ini adalah teks hasil terjemahan (reverse check)
         if (reverseTranslationMap.containsKey(original)) {
             return original;
         }
 
-        // Tier 3: Trigger API Translate jika belum ada di kamus & tidak offline
-        if (autoTranslateEnabled && !isOfflineMode.get() && !sedangDiterjemahkan.containsKey(original)) {
+        if (autoTranslateEnabled && !sedangDiterjemahkan.containsKey(original)) {
             sedangDiterjemahkan.put(original, true);
             translateExecutor.execute(() -> terjemahkanViaAPI(original));
         }
 
-        // Tier 4: Penyaringan Subtext & Dump teks mentah
         if (isDumpMode) {
-            // Hapus substring yang lebih pendek dari daftar dump jika kalimat yang lebih panjang muncul
             for (String key : dumpedStrings.keySet()) {
                 if (original.length() > key.length() && original.contains(key)) {
                     dumpedStrings.remove(key);
@@ -177,7 +202,6 @@ public class TranslationManager {
                 }
             }
             
-            // Cek apakah teks ini merupakan bagian pecahan dari kalimat panjang yang sudah di-dump
             boolean isSubText = false;
             for (String key : dumpedStrings.keySet()) {
                 if (key.length() >= original.length() && key.contains(original)) {
@@ -195,9 +219,10 @@ public class TranslationManager {
         return original;
     }
 
-    // Implementasi `terjemahkanViaAPI` (Adaptasi HTTP Async dari JS)
     private static void terjemahkanViaAPI(String teks) {
         try {
+            Thread.sleep(300);
+
             String urlStr = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=id&dt=t&q=" 
                     + URLEncoder.encode(teks, "UTF-8");
             
@@ -217,7 +242,6 @@ public class TranslationManager {
                 }
                 reader.close();
 
-                // Parsing array bertingkat `data[0][0][0]` dari response Google GTX
                 JSONArray jsonArray = new JSONArray(response.toString());
                 if (jsonArray.length() > 0) {
                     JSONArray sentences = jsonArray.getJSONArray(0);
@@ -234,22 +258,18 @@ public class TranslationManager {
                         translationMap.put(teks, hasilTranslate);
                         reverseTranslationMap.put(hasilTranslate, teks);
 
-                        // Bersihkan dari dump secara otomatis setelah sukses diterjemahkan
+                        hasNewTranslationToSave.set(true);
+
                         if (dumpedStrings.containsKey(teks)) {
                             dumpedStrings.remove(teks);
                             hasNewDataToSave.set(true);
                         }
                     }
                 }
-            } else {
-                // Jika server merespons non-200, set sementara ke offline mode
-                isOfflineMode.set(true);
             }
         } catch (Exception e) {
-            // Analog catch(err): Switch ke offline mode jika tidak ada koneksi
-            isOfflineMode.set(true);
+            e.printStackTrace();
         } finally {
-            // Analog delete sedangDiterjemahkan[teks]
             sedangDiterjemahkan.remove(teks);
         }
     }
