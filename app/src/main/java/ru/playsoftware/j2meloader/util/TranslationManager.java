@@ -37,7 +37,7 @@ public class TranslationManager {
     
     private static ScheduledExecutorService saveScheduler;
     private static ScheduledExecutorService translationSaveScheduler;
-    private static final ExecutorService translateExecutor = Executors.newSingleThreadExecutor();
+    private static final ExecutorService translateExecutor = Executors.newFixedThreadPool(4);
 
     public static void init(File gameDir) {
         if (gameDir == null) return;
@@ -173,30 +173,32 @@ public class TranslationManager {
     public static String processString(String original) {
         if (original == null) return original;
         
-        if (original.isEmpty() || original.length() <= 1 || original.matches("^\\d+$")) {
+        String trimmed = original.trim();
+        
+        if (trimmed.isEmpty() || trimmed.length() <= 1 || trimmed.matches("^\\d+$")) {
             return original;
         }
 
-        if (translationMap.containsKey(original)) {
-            if (dumpedStrings.containsKey(original)) {
-                dumpedStrings.remove(original);
+        if (translationMap.containsKey(trimmed)) {
+            if (dumpedStrings.containsKey(trimmed)) {
+                dumpedStrings.remove(trimmed);
                 hasNewDataToSave.set(true);
             }
-            return translationMap.get(original);
+            return original.replace(trimmed, translationMap.get(trimmed));
         }
 
-        if (reverseTranslationMap.containsKey(original)) {
+        if (reverseTranslationMap.containsKey(trimmed)) {
             return original;
         }
 
-        if (autoTranslateEnabled && !sedangDiterjemahkan.containsKey(original)) {
-            sedangDiterjemahkan.put(original, true);
-            translateExecutor.execute(() -> terjemahkanViaAPI(original));
+        if (autoTranslateEnabled && !sedangDiterjemahkan.containsKey(trimmed)) {
+            sedangDiterjemahkan.put(trimmed, true);
+            translateExecutor.execute(() -> terjemahkanViaAPI(trimmed));
         }
 
         if (isDumpMode) {
             for (String key : dumpedStrings.keySet()) {
-                if (original.length() > key.length() && original.contains(key)) {
+                if (trimmed.length() > key.length() && trimmed.contains(key)) {
                     dumpedStrings.remove(key);
                     hasNewDataToSave.set(true);
                 }
@@ -204,14 +206,14 @@ public class TranslationManager {
             
             boolean isSubText = false;
             for (String key : dumpedStrings.keySet()) {
-                if (key.length() >= original.length() && key.contains(original)) {
+                if (key.length() >= trimmed.length() && key.contains(trimmed)) {
                     isSubText = true;
                     break;
                 }
             }
             
-            if (!isSubText && !dumpedStrings.containsKey(original)) {
-                dumpedStrings.put(original, original);
+            if (!isSubText && !dumpedStrings.containsKey(trimmed)) {
+                dumpedStrings.put(trimmed, trimmed);
                 hasNewDataToSave.set(true);
             }
         }
@@ -221,16 +223,14 @@ public class TranslationManager {
 
     private static void terjemahkanViaAPI(String teks) {
         try {
-            Thread.sleep(300);
-
             String urlStr = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=id&dt=t&q=" 
                     + URLEncoder.encode(teks, "UTF-8");
             
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setConnectTimeout(3000);
-            conn.setReadTimeout(3000);
+            conn.setConnectTimeout(2000);
+            conn.setReadTimeout(2000);
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
 
             if (conn.getResponseCode() == 200) {
