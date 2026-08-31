@@ -170,6 +170,35 @@ public class TranslationManager {
         }
     }
 
+    private static String wrapText(String text, int maxCharsPerLine) {
+        if (text == null || text.length() <= maxCharsPerLine || text.contains("\n")) {
+            return text;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        String[] words = text.split(" ");
+        int currentLineLength = 0;
+
+        for (String word : words) {
+            if (currentLineLength + word.length() + 1 > maxCharsPerLine) {
+                if (sb.length() > 0) {
+                    sb.append("\n");
+                }
+                sb.append(word);
+                currentLineLength = word.length();
+            } else {
+                if (sb.length() > 0 && currentLineLength > 0) {
+                    sb.append(" ");
+                    currentLineLength++;
+                }
+                sb.append(word);
+                currentLineLength += word.length();
+            }
+        }
+
+        return sb.toString();
+    }
+
     public static String processString(String original) {
         if (original == null) return original;
         
@@ -184,7 +213,14 @@ public class TranslationManager {
                 dumpedStrings.remove(trimmed);
                 hasNewDataToSave.set(true);
             }
-            return original.replace(trimmed, translationMap.get(trimmed));
+            
+            String translated = translationMap.get(trimmed);
+            int maxChar = Math.max(trimmed.length() + 3, 18);
+            if (translated.length() > trimmed.length()) {
+                translated = wrapText(translated, maxChar);
+            }
+
+            return original.replace(trimmed, translated);
         }
 
         if (reverseTranslationMap.containsKey(trimmed)) {
