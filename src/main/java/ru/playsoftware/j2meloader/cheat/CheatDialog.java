@@ -4,6 +4,7 @@ import android.app.Dialog;
 import android.content.Context;
 import android.os.Bundle;
 import android.text.InputType;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -41,8 +42,10 @@ public class CheatDialog extends Dialog {
         tvStatus.setText("Memory Injector Status: Ready");
 
         EditText etValue = new EditText(getContext());
-        etValue.setHint("Masukkan Nilai (Contoh: 9999)");
-        etValue.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        etValue.setHint("Masukkan Nilai (Contoh: 9999 atau 99.99)");
+        etValue.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        etValue.setFocusable(true);
+        etValue.setFocusableInTouchMode(true);
 
         Button btnFirstScan = new Button(getContext());
         btnFirstScan.setText("First Scan");
@@ -56,8 +59,10 @@ public class CheatDialog extends Dialog {
         listView.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
 
         EditText etInjectValue = new EditText(getContext());
-        etInjectValue.setHint("Nilai Baru Inject");
-        etInjectValue.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        etInjectValue.setHint("Nilai Baru Inject (Contoh: 100 atau 10.5)");
+        etInjectValue.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        etInjectValue.setFocusable(true);
+        etInjectValue.setFocusableInTouchMode(true);
 
         CheckBox cbFreeze = new CheckBox(getContext());
         cbFreeze.setText("Lock / Freeze Value");
@@ -81,12 +86,26 @@ public class CheatDialog extends Dialog {
         setContentView(layout);
         setTitle("Memory Cheat Injector");
 
+        // show native keyboard for convenience
+        etValue.requestFocus();
+        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.showSoftInput(etValue, InputMethodManager.SHOW_IMPLICIT);
+        }
+
         // First Scan
         btnFirstScan.setOnClickListener(v -> {
             String input = etValue.getText().toString().trim();
             if (input.isEmpty()) return;
             int val;
-            try { val = Integer.parseInt(input); } catch (NumberFormatException e) { return; }
+            try {
+                // if decimal provided, parse as float then cast to int
+                if (input.contains(".")) {
+                    val = (int) Float.parseFloat(input);
+                } else {
+                    val = Integer.parseInt(input);
+                }
+            } catch (NumberFormatException e) { return; }
             List<MemoryScanner.ScanResult> results = MemoryScanner.firstScan(activeObjects, val);
             adapter.clear();
             adapter.addAll(results);
@@ -98,7 +117,13 @@ public class CheatDialog extends Dialog {
             String input = etValue.getText().toString().trim();
             if (input.isEmpty()) return;
             int val;
-            try { val = Integer.parseInt(input); } catch (NumberFormatException e) { return; }
+            try {
+                if (input.contains(".")) {
+                    val = (int) Float.parseFloat(input);
+                } else {
+                    val = Integer.parseInt(input);
+                }
+            } catch (NumberFormatException e) { return; }
             List<MemoryScanner.ScanResult> results = MemoryScanner.nextScan(val);
             adapter.clear();
             adapter.addAll(results);
@@ -110,6 +135,9 @@ public class CheatDialog extends Dialog {
             selectedResult = adapter.getItem(position);
             if (selectedResult != null) {
                 etInjectValue.setText(String.valueOf(selectedResult.value));
+                // focus inject field and show keyboard
+                etInjectValue.requestFocus();
+                if (imm != null) imm.showSoftInput(etInjectValue, InputMethodManager.SHOW_IMPLICIT);
             }
         });
 
@@ -122,7 +150,13 @@ public class CheatDialog extends Dialog {
             String injectStr = etInjectValue.getText().toString().trim();
             if (injectStr.isEmpty()) return;
             int newVal;
-            try { newVal = Integer.parseInt(injectStr); } catch (NumberFormatException e) { return; }
+            try {
+                if (injectStr.contains(".")) {
+                    newVal = (int) Float.parseFloat(injectStr);
+                } else {
+                    newVal = Integer.parseInt(injectStr);
+                }
+            } catch (NumberFormatException e) { return; }
 
             if (cbFreeze.isChecked()) {
                 MemoryScanner.freeze(selectedResult, newVal);

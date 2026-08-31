@@ -24,6 +24,12 @@ import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
@@ -36,11 +42,15 @@ import androidx.preference.PreferenceManager;
 import com.nononsenseapps.filepicker.Utils;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Map;
 
 import ru.playsoftware.j2meloader.applist.AppListModel;
 import ru.playsoftware.j2meloader.applist.AppsListFragment;
 import ru.playsoftware.j2meloader.base.BaseActivity;
+import ru.playsoftware.j2meloader.cheat.CheatDialog;
+import ru.playsoftware.j2meloader.cheat.MemoryScanner;
+import ru.playsoftware.j2meloader.midlet.MIDletRegistry;
 import ru.playsoftware.j2meloader.config.Config;
 import ru.playsoftware.j2meloader.util.FileUtils;
 import ru.playsoftware.j2meloader.util.PickDirResultContract;
@@ -63,6 +73,12 @@ public class MainActivity extends BaseActivity {
 
 	private SharedPreferences preferences;
 	private AppListModel appListModel;
+
+	// Cheat overlay fields
+	private CheatDialog cheatDialog;
+	private Button cheatOverlayBtn;
+	private float dX, dY;
+	private boolean isDragging = false;
 
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
@@ -93,6 +109,9 @@ public class MainActivity extends BaseActivity {
 			preferences.edit().putBoolean(PREF_STORAGE_WARNING_SHOWN, true).apply();
 		}
 		setVolumeControlStream(AudioManager.STREAM_MUSIC);
+
+		// Setup cheat overlay button so you can open cheat menu while using the app/game
+		setupCheatOverlayButton();
 	}
 
 	private void checkAndCreateDirs() {
@@ -192,5 +211,86 @@ public class MainActivity extends BaseActivity {
 		if (uri != null) {
 			InstallerDialog.newInstance(uri).show(getSupportFragmentManager(), "installer");
 		}
+	}
+
+	// --- Cheat overlay implementation ---
+	private void setupCheatOverlayButton() {
+		cheatOverlayBtn = new Button(this);
+		cheatOverlayBtn.setText("CHEAT");
+		cheatOverlayBtn.setTextSize(10f);
+		cheatOverlayBtn.setPadding(10, 5, 10, 5);
+		cheatOverlayBtn.setAlpha(0.8f);
+
+		FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+				FrameLayout.LayoutParams.WRAP_CONTENT,
+				FrameLayout.LayoutParams.WRAP_CONTENT
+		);
+		params.gravity = Gravity.TOP | Gravity.END;
+		params.topMargin = 100;
+		params.rightMargin = 20;
+
+		cheatOverlayBtn.setOnTouchListener(new View.OnTouchListener() {
+			private float startX, startY;
+
+			@Override
+			public boolean onTouch(View view, MotionEvent event) {
+				switch (event.getActionMasked()) {
+					case MotionEvent.ACTION_DOWN:
+						dX = view.getX() - event.getRawX();
+						dY = view.getY() - event.getRawY();
+						startX = event.getRawX();
+						startY = event.getRawY();
+						isDragging = false;
+						return true;
+
+					case MotionEvent.ACTION_MOVE:
+						if (Math.abs(event.getRawX() - startX) > 10 || Math.abs(event.getRawY() - startY) > 10) {
+							isDragging = true;
+						}
+						view.animate()
+							.x(event.getRawX() + dX)
+							.y(event.getRawY() + dY)
+							.setDuration(0)
+							.start();
+						return true;
+
+					case MotionEvent.ACTION_UP:
+						if (!isDragging) {
+							toggleCheatMenu();
+						}
+						return true;
+				}
+				return false;
+			}
+		});
+
+		ViewGroup rootView = findViewById(android.R.id.content);
+		if (rootView != null) {
+			rootView.addView(cheatOverlayBtn, params);
+		}
+	}
+
+	public void toggleCheatMenu() {
+		if (cheatDialog != null && cheatDialog.isShowing()) {
+			cheatDialog.dismiss();
+		} else {
+			// Use MIDletRegistry so scanner can find active instances
+			ArrayList<Object> active = new ArrayList<>(MIDletRegistry.getActiveInstances());
+			cheatDialog = new CheatDialog(this, active);
+			cheatDialog.show();
+		}
+	}
+
+	@Override
+	protected void onDestroy() {
+		super.onDestroy();
+		if (cheatDialog != null && cheatDialog.isShowing()) {
+			cheatDialog.dismiss();
+		}
+		ViewGroup rootView = findViewById(android.R.id.content);
+		if (rootView != null && cheatOverlayBtn != null) {
+			rootView.removeView(cheatOverlayBtn);
+		}
+		MemoryScanner.clearAll();
 	}
 }
