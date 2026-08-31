@@ -2,14 +2,24 @@ package ru.playsoftware.j2meloader.util;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,27 +29,29 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+// ==========================================
+// 1. CLASS UTAMA (Public, nama file harus TranslationManager.java)
+// ==========================================
 public class TranslationManager {
     private static final Map<String, String> translationMap = new ConcurrentHashMap<>();
     private static final Map<String, String> reverseTranslationMap = new ConcurrentHashMap<>();
     private static final Map<String, String> dumpedStrings = new ConcurrentHashMap<>();
-    
     private static final Map<String, Boolean> sedangDiterjemahkan = new ConcurrentHashMap<>();
     
     private static File translationFile;
     private static File dumpFile;
     
-    private static boolean isDumpMode = true; 
-    private static boolean autoTranslateEnabled = true;
+    private static volatile boolean isDumpMode = true; 
+    private static volatile boolean autoTranslateEnabled = true;
     
     private static final AtomicBoolean hasNewDataToSave = new AtomicBoolean(false);
     private static final AtomicBoolean hasNewTranslationToSave = new AtomicBoolean(false);
     
     private static ScheduledExecutorService saveScheduler;
     private static ScheduledExecutorService translationSaveScheduler;
-    private static final ExecutorService translateExecutor = Executors.newFixedThreadPool(4);
+    private static ExecutorService translateExecutor;
 
-    public static void init(File gameDir) {
+    public static synchronized void init(File gameDir) {
         if (gameDir == null) return;
         
         translationFile = new File(gameDir, "translation.json");
@@ -48,12 +60,16 @@ public class TranslationManager {
         loadTranslation();
         loadExistingDump();
 
-        if (isDumpMode && saveScheduler == null) {
+        if (translateExecutor == null || translateExecutor.isShutdown()) {
+            translateExecutor = Executors.newFixedThreadPool(4);
+        }
+
+        if (saveScheduler == null || saveScheduler.isShutdown()) {
             saveScheduler = Executors.newSingleThreadScheduledExecutor();
             saveScheduler.scheduleWithFixedDelay(TranslationManager::saveDumpInternal, 500, 500, TimeUnit.MILLISECONDS);
         }
 
-        if (translationSaveScheduler == null) {
+        if (translationSaveScheduler == null || translationSaveScheduler.isShutdown()) {
             translationSaveScheduler = Executors.newSingleThreadScheduledExecutor();
             translationSaveScheduler.scheduleWithFixedDelay(TranslationManager::saveTranslationInternal, 1000, 1000, TimeUnit.MILLISECONDS);
         }
@@ -65,11 +81,11 @@ public class TranslationManager {
 
         if (translationFile == null || !translationFile.exists()) return;
 
-        try (FileReader reader = new FileReader(translationFile)) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(translationFile), StandardCharsets.UTF_8))) {
             StringBuilder sb = new StringBuilder();
-            int ch;
-            while ((ch = reader.read()) != -1) {
-                sb.append((char) ch);
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
             }
             if (sb.length() == 0) return;
             
@@ -88,11 +104,12 @@ public class TranslationManager {
 
     private static void loadExistingDump() {
         if (dumpFile == null || !dumpFile.exists()) return;
-        try (FileReader reader = new FileReader(dumpFile)) {
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(dumpFile), StandardCharsets.UTF_8))) {
             StringBuilder sb = new StringBuilder();
-            int ch;
-            while ((ch = reader.read()) != -1) {
-                sb.append((char) ch);
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
             }
             if (sb.length() == 0) return;
 
@@ -109,14 +126,15 @@ public class TranslationManager {
 
     public static void saveDumpInternal() {
         if (!isDumpMode || !hasNewDataToSave.compareAndSet(true, false) || dumpFile == null) return;
+        
+        File tempFile = new File(dumpFile.getAbsolutePath() + ".tmp");
         try {
             JSONObject json = new JSONObject();
             for (Map.Entry<String, String> entry : dumpedStrings.entrySet()) {
                 json.put(entry.getKey(), entry.getValue());
             }
 
-            File tempFile = new File(dumpFile.getAbsolutePath() + ".tmp");
-            try (FileWriter writer = new FileWriter(tempFile)) {
+            try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(tempFile), StandardCharsets.UTF_8)) {
                 writer.write(json.toString(4));
             }
             
@@ -132,14 +150,15 @@ public class TranslationManager {
 
     public static void saveTranslationInternal() {
         if (!hasNewTranslationToSave.compareAndSet(true, false) || translationFile == null) return;
+        
+        File tempFile = new File(translationFile.getAbsolutePath() + ".tmp");
         try {
             JSONObject json = new JSONObject();
             for (Map.Entry<String, String> entry : translationMap.entrySet()) {
                 json.put(entry.getKey(), entry.getValue());
             }
 
-            File tempFile = new File(translationFile.getAbsolutePath() + ".tmp");
-            try (FileWriter writer = new FileWriter(tempFile)) {
+            try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(tempFile), StandardCharsets.UTF_8)) {
                 writer.write(json.toString(4));
             }
             
@@ -153,20 +172,21 @@ public class TranslationManager {
         }
     }
 
-    public static void shutdownScheduler() {
+    public static synchronized void shutdownScheduler() {
         saveDumpInternal();
         saveTranslationInternal();
 
         if (saveScheduler != null && !saveScheduler.isShutdown()) {
-            saveScheduler.shutdownNow();
+            saveScheduler.shutdown();
             saveScheduler = null;
         }
         if (translationSaveScheduler != null && !translationSaveScheduler.isShutdown()) {
-            translationSaveScheduler.shutdownNow();
+            translationSaveScheduler.shutdown();
             translationSaveScheduler = null;
         }
         if (translateExecutor != null && !translateExecutor.isShutdown()) {
-            translateExecutor.shutdownNow();
+            translateExecutor.shutdown();
+            translateExecutor = null;
         }
     }
 
@@ -209,8 +229,7 @@ public class TranslationManager {
         }
 
         if (translationMap.containsKey(trimmed)) {
-            if (dumpedStrings.containsKey(trimmed)) {
-                dumpedStrings.remove(trimmed);
+            if (dumpedStrings.remove(trimmed) != null) {
                 hasNewDataToSave.set(true);
             }
             
@@ -228,18 +247,15 @@ public class TranslationManager {
         }
 
         if (autoTranslateEnabled && !sedangDiterjemahkan.containsKey(trimmed)) {
-            sedangDiterjemahkan.put(trimmed, true);
-            translateExecutor.execute(() -> terjemahkanViaAPI(trimmed));
+            sedangDiterjemahkan.put(trimmed, Boolean.TRUE);
+            if (translateExecutor != null && !translateExecutor.isShutdown()) {
+                translateExecutor.execute(() -> terjemahkanViaAPI(trimmed));
+            }
         }
 
         if (isDumpMode) {
-            for (String key : dumpedStrings.keySet()) {
-                if (trimmed.length() > key.length() && trimmed.contains(key)) {
-                    dumpedStrings.remove(key);
-                    hasNewDataToSave.set(true);
-                }
-            }
-            
+            dumpedStrings.keySet().removeIf(key -> trimmed.length() > key.length() && trimmed.contains(key));
+
             boolean isSubText = false;
             for (String key : dumpedStrings.keySet()) {
                 if (key.length() >= trimmed.length() && key.contains(trimmed)) {
@@ -247,7 +263,7 @@ public class TranslationManager {
                     break;
                 }
             }
-            
+
             if (!isSubText && !dumpedStrings.containsKey(trimmed)) {
                 dumpedStrings.put(trimmed, trimmed);
                 hasNewDataToSave.set(true);
@@ -258,55 +274,153 @@ public class TranslationManager {
     }
 
     private static void terjemahkanViaAPI(String teks) {
+        HttpURLConnection conn = null;
         try {
             String urlStr = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=id&dt=t&q=" 
                     + URLEncoder.encode(teks, "UTF-8");
             
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setConnectTimeout(2000);
-            conn.setReadTimeout(2000);
+            conn.setConnectTimeout(3000);
+            conn.setReadTimeout(3000);
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
 
             if (conn.getResponseCode() == 200) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                StringBuilder response = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    response.append(line);
-                }
-                reader.close();
-
-                JSONArray jsonArray = new JSONArray(response.toString());
-                if (jsonArray.length() > 0) {
-                    JSONArray sentences = jsonArray.getJSONArray(0);
-                    StringBuilder translatedResult = new StringBuilder();
-
-                    for (int i = 0; i < sentences.length(); i++) {
-                        JSONArray sentence = sentences.getJSONArray(i);
-                        translatedResult.append(sentence.getString(0));
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        response.append(line);
                     }
 
-                    String hasilTranslate = translatedResult.toString();
+                    JSONArray jsonArray = new JSONArray(response.toString());
+                    if (jsonArray.length() > 0) {
+                        JSONArray sentences = jsonArray.getJSONArray(0);
+                        StringBuilder translatedResult = new StringBuilder();
 
-                    if (!hasilTranslate.isEmpty() && !hasilTranslate.equals(teks)) {
-                        translationMap.put(teks, hasilTranslate);
-                        reverseTranslationMap.put(hasilTranslate, teks);
+                        for (int i = 0; i < sentences.length(); i++) {
+                            JSONArray sentence = sentences.getJSONArray(i);
+                            translatedResult.append(sentence.getString(0));
+                        }
 
-                        hasNewTranslationToSave.set(true);
+                        String hasilTranslate = translatedResult.toString();
 
-                        if (dumpedStrings.containsKey(teks)) {
-                            dumpedStrings.remove(teks);
-                            hasNewDataToSave.set(true);
+                        if (!hasilTranslate.isEmpty() && !hasilTranslate.equals(teks)) {
+                            translationMap.put(teks, hasilTranslate);
+                            reverseTranslationMap.put(hasilTranslate, teks);
+
+                            hasNewTranslationToSave.set(true);
+
+                            if (dumpedStrings.remove(teks) != null) {
+                                hasNewDataToSave.set(true);
+                            }
                         }
                     }
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            // Error koneksi diabaikan agar thread UI tidak terganggu
         } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
             sedangDiterjemahkan.remove(teks);
         }
+    }
+
+    public static void setDumpMode(boolean enabled) { isDumpMode = enabled; }
+    public static boolean isDumpMode() { return isDumpMode; }
+    public static void setAutoTranslateEnabled(boolean enabled) { autoTranslateEnabled = enabled; }
+    public static boolean isAutoTranslateEnabled() { return autoTranslateEnabled; }
+}
+
+// ==========================================
+// 2. CLASS PENDUKUNG RENDER (Package-Private)
+// ==========================================
+class GraphicsUtils {
+
+    private static final String DEFAULT_FONT_NAME = "Arial";
+    private static final int DEFAULT_STYLE = Font.BOLD;
+
+    public static void drawStringIntercepted(Graphics g, String str, int x, int y, int anchor) {
+        if (str == null || str.trim().isEmpty()) return;
+
+        String teksBaru = TranslationManager.processString(str);
+
+        Graphics2D g2d = (Graphics2D) g.create();
+        try {
+            g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+
+            Font fontAsli = g2d.getFont();
+            int fontSize = (fontAsli != null) ? fontAsli.getSize() : 13;
+            Font boldArial = new Font(DEFAULT_FONT_NAME, DEFAULT_STYLE, fontSize);
+            g2d.setFont(boldArial);
+
+            if (teksBaru.contains("\n")) {
+                double lineHeight = fontSize * 1.6;
+                String[] baris = teksBaru.split("\n");
+                for (int i = 0; i < baris.length; i++) {
+                    int nextY = Math.round((float) (y + (i * lineHeight)));
+                    renderAndScaleText(g2d, str, baris[i], x, nextY, anchor);
+                }
+            } else {
+                renderAndScaleText(g2d, str, teksBaru, x, y, anchor);
+            }
+
+        } finally {
+            g2d.dispose();
+        }
+    }
+
+    private static void renderAndScaleText(Graphics2D g2d, String teksAsli, String teksRender, int x, int y, int anchor) {
+        FontMetrics fm = g2d.getFontMetrics();
+        
+        int widthAsli = fm.stringWidth(teksAsli);
+        int widthBaru = fm.stringWidth(teksRender);
+
+        int drawX = alignX(x, widthAsli, anchor);
+        int drawY = alignY(y, fm, anchor);
+
+        AffineTransform oldTransform = g2d.getTransform();
+
+        boolean butuhScaling = !teksRender.equals(teksAsli) && (widthBaru > widthAsli) && (widthBaru > 0);
+
+        if (butuhScaling) {
+            double scaleX = (double) widthAsli / widthBaru;
+
+            g2d.translate(drawX, drawY);
+            g2d.scale(scaleX, 1.0);
+
+            drawShadowAndText(g2d, teksRender, 0, 0);
+
+            g2d.setTransform(oldTransform);
+        } else {
+            drawShadowAndText(g2d, teksRender, drawX, drawY);
+        }
+    }
+
+    private static void drawShadowAndText(Graphics2D g2d, String text, int x, int y) {
+        Color colorUtama = g2d.getColor();
+
+        g2d.setColor(new Color(0, 0, 0, 140));
+        g2d.drawString(text, x + 1, y + 1);
+
+        g2d.setColor(colorUtama);
+        g2d.drawString(text, x, y);
+    }
+
+    private static int alignX(int x, int width, int anchor) {
+        if ((anchor & 1) != 0) return x - (width / 2);
+        if ((anchor & 8) != 0) return x - width;
+        return x;
+    }
+
+    private static int alignY(int y, FontMetrics fm, int anchor) {
+        if ((anchor & 16) != 0) return y + fm.getAscent();
+        if ((anchor & 32) != 0) return y + (fm.getAscent() / 2);
+        if ((anchor & 64) != 0) return y - fm.getDescent();
+        return y;
     }
 }
