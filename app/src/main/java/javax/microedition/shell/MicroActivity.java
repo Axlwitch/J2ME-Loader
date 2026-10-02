@@ -71,7 +71,6 @@ import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
-import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.ViewHandler;
 import javax.microedition.lcdui.event.SimpleEvent;
@@ -87,6 +86,7 @@ import ru.playsoftware.j2meloader.config.Config;
 import ru.playsoftware.j2meloader.databinding.ActivityMicroBinding;
 import ru.playsoftware.j2meloader.util.Constants;
 import ru.playsoftware.j2meloader.util.LogUtils;
+import ru.playsoftware.j2meloader.util.TranslationManager;
 
 public class MicroActivity extends AppCompatActivity {
 	private static final int ORIENTATION_DEFAULT = 0;
@@ -146,6 +146,10 @@ public class MicroActivity extends AppCompatActivity {
 				throw new RuntimeException("Can't access file system");
 			}
 		}
+
+		// Siapkan terjemahan (translation.json ada di folder game)
+		TranslationManager.init(new File(appPath));
+
 		String arguments = intent.getStringExtra(KEY_START_ARGUMENTS);
 		if (arguments != null) {
 			MidletSystem.setProperty("com.nokia.mid.cmdline", arguments);
@@ -214,9 +218,9 @@ public class MicroActivity extends AppCompatActivity {
 		visible = false;
 		hideSoftInput();
 		MidletThread.pauseApp();
-		
+
 		saveDumpAutomatically();
-		
+
 		super.onPause();
 	}
 
@@ -335,16 +339,6 @@ public class MicroActivity extends AppCompatActivity {
 	public void setCurrent(Displayable displayable) {
 		ViewHandler.postEvent(new SetCurrentEvent(current, displayable));
 		current = displayable;
-		
-		if (displayable instanceof Canvas) {
-			Graphics g = Graphics.getCurrentInstance();
-			if (g != null && appPath != null) {
-				File translationFile = new File(appPath, "translation.json");
-				if (translationFile.exists()) {
-					g.loadTranslationsFromFile(translationFile);
-				}
-			}
-		}
 	}
 
 	public Displayable getCurrent() {
@@ -667,15 +661,7 @@ public class MicroActivity extends AppCompatActivity {
 	}
 
 	private void saveDumpAutomatically() {
-		try {
-			Graphics g = Graphics.getCurrentInstance();
-			if (g != null && appPath != null) {
-				File dumpFile = new File(appPath, "dump.json");
-				g.saveDumpToJSON(dumpFile);
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
+		TranslationManager.saveDump();
 	}
 
 	private class SetCurrentEvent extends SimpleEvent {
@@ -730,7 +716,7 @@ public class MicroActivity extends AppCompatActivity {
 	@Override
 	protected void onDestroy() {
 		saveDumpAutomatically();
-		
+
 		binding = null;
 		super.onDestroy();
 	}
