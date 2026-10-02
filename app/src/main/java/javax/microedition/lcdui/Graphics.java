@@ -34,15 +34,6 @@ import android.util.Log;
 
 import com.mascotcapsule.micro3d.v3.Graphics3D;
 import ru.playsoftware.j2meloader.util.TranslationManager;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import org.json.JSONObject;
 
 public class Graphics implements
 		com.vodafone.v10.graphics.j3d.Graphics3D,
@@ -58,9 +49,6 @@ public class Graphics implements
 
 	public static final int SOLID = 0;
 	public static final int DOTTED = 1;
-
-	// Instance static tracker untuk akses mudah dari MicroActivity
-	private static Graphics currentInstance;
 
 	private final Canvas canvas;
 	private final Image image;
@@ -82,15 +70,6 @@ public class Graphics implements
 	private Font font = Font.getDefaultFont();
 	private com.mascotcapsule.micro3d.v3.Graphics3D g3d;
 
-	// ===== TEXT DUMPING & TRANSLATION FEATURE =====
-	private boolean textDumpEnabled = true;
-	private final Map<String, String> translations = new HashMap<>();
-	private final Set<String> dumpedTexts = new HashSet<>();
-	
-	private int maxTextWidth = 150;
-	private boolean autoScaleFontForLongText = true;
-	private float minFontScale = 0.7f;
-
 	Graphics(Image image) {
 		this.image = image;
 		canvas = new Canvas(image.getBitmap());
@@ -101,12 +80,6 @@ public class Graphics implements
 		fillPaint.setStyle(Paint.Style.FILL);
 		drawPaint.setAntiAlias(false);
 		fillPaint.setAntiAlias(false);
-
-		currentInstance = this;
-	}
-
-	public static Graphics getCurrentInstance() {
-		return currentInstance;
 	}
 
 	public void reset(float cl, float ct, float cr, float cb) {
@@ -327,53 +300,31 @@ public class Graphics implements
 	}
 
 	public void drawChars(char[] data, int offset, int length, int x, int y, int anchor) {
-		String originalText = new String(data, offset, length);
-		String textToDraw = originalText;
-
-		if (translations.containsKey(originalText)) {
-			textToDraw = translations.get(originalText);
-		}
-
-		Paint paint = font.paint;
-		if ((anchor & Graphics.RIGHT) != 0) {
-			paint.setTextAlign(Paint.Align.RIGHT);
-		} else if ((anchor & Graphics.HCENTER) != 0) {
-			paint.setTextAlign(Paint.Align.CENTER);
+		String s = new String(data, offset, length);
+		if (length > 1) {
+			drawString(s, x, y, anchor);   // lewat jalur terjemahan
 		} else {
-			paint.setTextAlign(Paint.Align.LEFT);
-		}
-
-		float ly;
-		if ((anchor & Graphics.BOTTOM) != 0) {
-			ly = y - font.descent;
-		} else if ((anchor & Graphics.VCENTER) != 0) {
-			ly = y - (font.descent + font.ascent) / 2.0f;
-		} else if ((anchor & Graphics.BASELINE) != 0) {
-			ly = y;
-		} else {
-			ly = y - font.ascent;
-		}
-
-		paint.setColor(fillPaint.getColor());
-		canvas.drawText(textToDraw.toCharArray(), 0, textToDraw.length(), x, ly, paint);
-
-		if (textDumpEnabled) {
-			if (!translations.containsKey(originalText) && !dumpedTexts.contains(originalText)) {
-				dumpedTexts.add(originalText);
-			}
+			drawText(s, x, y, anchor);     // satu karakter: gambar langsung
 		}
 	}
 
 	public void drawString(String text, int x, int y, int anchor) {
 		if (text == null) return;
-		String originalText = text;
-		
-		if (translations.containsKey(originalText)) {
-			text = translations.get(originalText);
+		String translated = TranslationManager.processString(text);
+		if (translated != null && !translated.equals(text)) {
+			drawFitted(text, translated, x, y, anchor);
 		} else {
-			text = TranslationManager.processString(text);
+			drawText(text, x, y, anchor);
 		}
+	}
 
+	public void drawSubstring(String str, int offset, int len, int x, int y, int anchor) {
+		if (str == null) return;
+		drawString(str.substring(offset, offset + len), x, y, anchor);
+	}
+
+	// Kode asli drawString (tanpa TranslationManager)
+	private void drawText(String text, int x, int y, int anchor) {
 		Paint paint = font.paint;
 		if ((anchor & Graphics.RIGHT) != 0) {
 			paint.setTextAlign(Paint.Align.RIGHT);
@@ -395,22 +346,49 @@ public class Graphics implements
 		}
 
 		paint.setColor(fillPaint.getColor());
-		
-		float textWidth = paint.measureText(text);
-		if (textWidth > maxTextWidth && autoScaleFontForLongText) {
-			float scaleFactor = maxTextWidth / textWidth;
-			scaleFactor = Math.max(scaleFactor, minFontScale);
-			paint.setTextScaleX(scaleFactor);
-		} else {
-			paint.setTextScaleX(1.0f);
-		}
-		
 		canvas.drawText(text, x, ly, paint);
+	}
 
-		if (textDumpEnabled) {
-			if (!translations.containsKey(originalText) && !dumpedTexts.contains(originalText)) {
-				dumpedTexts.add(originalText);
+	// Urutan: 1) kecilkan font (min 60%) 2) sempitkan horizontal (min 65%) 3) wrap per kata
+	private void drawFitted(String original, String translated, int x, int y, int anchor) {
+		Paint paint = font.paint;
+		float origSize = paint.getTextSize();
+		float origScaleX = paint.getTextScaleX();
+		float maxW = Math.max(paint.measureText(original), 40f); // lebar teks asli = batas
+		try {
+			float size = origSize;
+			while (size > origSize * 0.6f && paint.measureText(translated) > maxW) {
+				size -= 1f;
+				paint.setTextSize(size);
 			}
+
+			float w = paint.measureText(translated);
+			if (w > maxW) {
+				paint.setTextScaleX(Math.max(0.65f, maxW / w));
+			}
+
+			java.util.List<String> lines = new java.util.ArrayList<>();
+			for (String para : translated.split("\n")) {
+				StringBuilder line = new StringBuilder();
+				for (String word : para.split(" ")) {
+					String test = line.length() == 0 ? word : line + " " + word;
+					if (line.length() == 0 || paint.measureText(test) <= maxW) {
+						line = new StringBuilder(test);
+					} else {
+						lines.add(line.toString());
+						line = new StringBuilder(word);
+					}
+				}
+				lines.add(line.toString());
+			}
+
+			int lh = Math.round(paint.getFontSpacing());
+			for (int i = 0; i < lines.size(); i++) {
+				drawText(lines.get(i), x, y + i * lh, anchor);
+			}
+		} finally {
+			paint.setTextSize(origSize);      // wajib dikembalikan
+			paint.setTextScaleX(origScaleX);  // wajib dikembalikan
 		}
 	}
 
@@ -434,12 +412,6 @@ public class Graphics implements
 		}
 
 		canvas.drawBitmap(image.getBitmap(), lx, ly, null);
-	}
-
-	public void drawSubstring(String str, int offset, int len, int x, int y, int anchor) {
-		if (str == null) return;
-		String sub = str.substring(offset, offset + len);
-		drawString(sub, x, y, anchor);
 	}
 
 	public void drawRegion(Image image, int x_src, int y_src, int width, int height,
@@ -640,78 +612,5 @@ public class Graphics implements
 		g3d.bind(this);
 		g3d.drawFigure(figure, x, y, layout, effect);
 		g3d.release(this);
-	}
-
-	// ===== TRANSLATION LOAD & DUMP ENGINE =====
-
-	public void loadTranslationsFromFile(File translationFile) {
-		translations.clear();
-		if (translationFile == null || !translationFile.exists()) return;
-
-		try {
-			String jsonContent = readFileAsString(translationFile);
-			JSONObject jsonObj = new JSONObject(jsonContent);
-			JSONObject translationsObj = jsonObj.optJSONObject("translations");
-			
-			if (translationsObj != null) {
-				java.util.Iterator<String> keys = translationsObj.keys();
-				while (keys.hasNext()) {
-					String key = keys.next();
-					translations.put(key, translationsObj.getString(key));
-				}
-				Log.i("Graphics", "Loaded " + translations.size() + " translations.");
-			}
-		} catch (Exception e) {
-			Log.e("Graphics", "Error loading translations", e);
-		}
-	}
-
-	public void saveDumpToJSON(File outputFile) {
-		if (dumpedTexts.isEmpty()) return;
-
-		try {
-			File parentDir = outputFile.getParentFile();
-			if (parentDir != null && !parentDir.exists()) {
-				parentDir.mkdirs();
-			}
-
-			JSONObject root = new JSONObject();
-			root.put("version", "1.0");
-			root.put("timestamp", System.currentTimeMillis());
-
-			JSONObject textsObj = new JSONObject();
-			for (String text : dumpedTexts) {
-				textsObj.put(text, "");
-			}
-			root.put("texts", textsObj);
-
-			try (FileWriter writer = new FileWriter(outputFile)) {
-				writer.write(root.toString(2));
-			}
-
-			Log.i("Graphics", "✅ dump.json saved to: " + outputFile.getAbsolutePath());
-		} catch (Exception e) {
-			Log.e("Graphics", "Error saving dump.json", e);
-		}
-	}
-
-	private String readFileAsString(File file) throws IOException {
-		StringBuilder sb = new StringBuilder();
-		try (FileReader reader = new FileReader(file)) {
-			char[] buffer = new char[1024];
-			int length;
-			while ((length = reader.read(buffer)) > 0) {
-				sb.append(buffer, 0, length);
-			}
-		}
-		return sb.toString();
-	}
-
-	public void setMaxTextWidth(int widthPixels) {
-		this.maxTextWidth = widthPixels;
-	}
-
-	public void setAutoScaleFontForLongText(boolean enabled) {
-		this.autoScaleFontForLongText = enabled;
 	}
 }
