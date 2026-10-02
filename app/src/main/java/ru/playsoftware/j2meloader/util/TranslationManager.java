@@ -1,431 +1,147 @@
 package ru.playsoftware.j2meloader.util;
 
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Typeface;
-
-import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.io.OutputStreamWriter;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
+import java.io.Writer;
+import java.nio.charset.Charset;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
-// ==========================================
-// 1. CLASS UTAMA (TranslationManager)
-// ==========================================
 public class TranslationManager {
+    private static final Charset UTF8 = Charset.forName("UTF-8");
+
+    // teks asli -> terjemahan (dibaca dari translation.json)
     private static final Map<String, String> translationMap = new ConcurrentHashMap<>();
-    private static final Map<String, String> reverseTranslationMap = new ConcurrentHashMap<>();
-    private static final Map<String, String> dumpedStrings = new ConcurrentHashMap<>();
-    private static final Map<String, Boolean> sedangDiterjemahkan = new ConcurrentHashMap<>();
-    
-    private static File translationFile;
-    private static File dumpFile;
-    
-    private static volatile boolean isDumpMode = true; 
-    private static volatile boolean autoTranslateEnabled = true;
-    
-    private static final AtomicBoolean hasNewDataToSave = new AtomicBoolean(false);
-    private static final AtomicBoolean hasNewTranslationToSave = new AtomicBoolean(false);
-    
-    private static ScheduledExecutorService saveScheduler;
-    private static ScheduledExecutorService translationSaveScheduler;
-    private static ExecutorService translateExecutor;
+    // teks yang sudah pernah dilihat game (supaya tidak diproses berulang tiap frame)
+    private static final Map<String, Boolean> seen = new ConcurrentHashMap<>();
+    // teks baru yang menunggu ditulis ke file
+    private static final Map<String, String> pending = new ConcurrentHashMap<>();
+
+    private static volatile File jsonFile;
+    private static volatile boolean dirty = false;
+    private static ScheduledExecutorService saver;
+
+    // true = simpan teks baru ke translation.json (set false kalau sudah selesai menerjemahkan)
+    private static final boolean isDumpMode = true;
 
     public static synchronized void init(File gameDir) {
-        if (gameDir == null) return;
-        
-        translationFile = new File(gameDir, "translation.json");
-        dumpFile = new File(gameDir, "dump.json");
-        
-        loadTranslation();
-        loadExistingDump();
-
-        if (translateExecutor == null || translateExecutor.isShutdown()) {
-            translateExecutor = Executors.newFixedThreadPool(4);
-        }
-
-        if (saveScheduler == null || saveScheduler.isShutdown()) {
-            saveScheduler = Executors.newSingleThreadScheduledExecutor();
-            saveScheduler.scheduleWithFixedDelay(TranslationManager::saveDumpInternal, 500, 500, TimeUnit.MILLISECONDS);
-        }
-
-        if (translationSaveScheduler == null || translationSaveScheduler.isShutdown()) {
-            translationSaveScheduler = Executors.newSingleThreadScheduledExecutor();
-            translationSaveScheduler.scheduleWithFixedDelay(TranslationManager::saveTranslationInternal, 1000, 1000, TimeUnit.MILLISECONDS);
-        }
-    }
-
-    public static void loadTranslation() {
+        jsonFile = new File(gameDir, "translation.json");
         translationMap.clear();
-        reverseTranslationMap.clear();
+        seen.clear();
+        pending.clear();
+        loadTranslation();
 
-        if (translationFile == null || !translationFile.exists()) return;
+        if (isDumpMode && saver == null) {
+            saver = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
+                @Override
+                public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "TranslationDump");
+                    t.setDaemon(true);
+                    return t;
+                }
+            });
+            saver.scheduleWithFixedDelay(new Runnable() {
+                @Override
+                public void run() {
+                    saveDump();
+                }
+            }, 5, 5, TimeUnit.SECONDS);
+        }
+    }
 
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(translationFile), StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
-            }
-            if (sb.length() == 0) return;
-            
-            JSONObject json = new JSONObject(sb.toString());
+    /** Bisa dipanggil ulang untuk reload setelah JSON diedit. */
+    public static synchronized void loadTranslation() {
+        File f = jsonFile;
+        if (f == null || !f.exists()) return;
+        try {
+            JSONObject json = new JSONObject(readFile(f));
             Iterator<String> keys = json.keys();
             while (keys.hasNext()) {
                 String key = keys.next();
-                String val = json.getString(key);
-                translationMap.put(key, val);
-                reverseTranslationMap.put(val, key);
+                translationMap.put(key, json.getString(key));
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private static void loadExistingDump() {
-        if (dumpFile == null || !dumpFile.exists()) return;
-
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(dumpFile), StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
-            }
-            if (sb.length() == 0) return;
-
-            JSONObject json = new JSONObject(sb.toString());
-            Iterator<String> keys = json.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                dumpedStrings.put(key, json.getString(key));
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    public static void saveDumpInternal() {
-        if (!isDumpMode || !hasNewDataToSave.compareAndSet(true, false) || dumpFile == null) return;
-        
-        File tempFile = new File(dumpFile.getAbsolutePath() + ".tmp");
+    /** Dipanggil periodik oleh thread terpisah. Panggil juga saat game ditutup. */
+    public static synchronized void saveDump() {
+        File f = jsonFile;
+        if (!isDumpMode || !dirty || f == null || pending.isEmpty()) return;
         try {
-            JSONObject json = new JSONObject();
-            for (Map.Entry<String, String> entry : dumpedStrings.entrySet()) {
-                json.put(entry.getKey(), entry.getValue());
+            // baca isi file terbaru supaya terjemahan yang sudah ada tidak tertimpa
+            JSONObject json = f.exists() ? new JSONObject(readFile(f)) : new JSONObject();
+            for (Map.Entry<String, String> e : pending.entrySet()) {
+                if (!json.has(e.getKey())) {
+                    json.put(e.getKey(), e.getValue());
+                }
             }
-
-            try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(tempFile), StandardCharsets.UTF_8)) {
-                writer.write(json.toString(4));
+            // tulis ke file sementara dulu, lalu rename (aman kalau app crash)
+            File tmp = new File(f.getParentFile(), "translation.json.tmp");
+            try (Writer w = new OutputStreamWriter(new FileOutputStream(tmp), UTF8)) {
+                w.write(json.toString(4));
             }
-            
-            if (tempFile.exists()) {
-                if (dumpFile.exists()) dumpFile.delete();
-                tempFile.renameTo(dumpFile);
+            if (!tmp.renameTo(f)) {
+                f.delete();
+                tmp.renameTo(f);
             }
+            pending.clear();
+            dirty = false;
         } catch (Exception e) {
-            hasNewDataToSave.set(true);
             e.printStackTrace();
         }
     }
 
-    public static void saveTranslationInternal() {
-        if (!hasNewTranslationToSave.compareAndSet(true, false) || translationFile == null) return;
-        
-        File tempFile = new File(translationFile.getAbsolutePath() + ".tmp");
-        try {
-            JSONObject json = new JSONObject();
-            for (Map.Entry<String, String> entry : translationMap.entrySet()) {
-                json.put(entry.getKey(), entry.getValue());
-            }
-
-            try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(tempFile), StandardCharsets.UTF_8)) {
-                writer.write(json.toString(4));
-            }
-            
-            if (tempFile.exists()) {
-                if (translationFile.exists()) translationFile.delete();
-                tempFile.renameTo(translationFile);
-            }
-        } catch (Exception e) {
-            hasNewTranslationToSave.set(true);
-            e.printStackTrace();
-        }
-    }
-
-    public static synchronized void shutdownScheduler() {
-        saveDumpInternal();
-        saveTranslationInternal();
-
-        if (saveScheduler != null && !saveScheduler.isShutdown()) {
-            saveScheduler.shutdown();
-            saveScheduler = null;
-        }
-        if (translationSaveScheduler != null && !translationSaveScheduler.isShutdown()) {
-            translationSaveScheduler.shutdown();
-            translationSaveScheduler = null;
-        }
-        if (translateExecutor != null && !translateExecutor.isShutdown()) {
-            translateExecutor.shutdown();
-            translateExecutor = null;
-        }
-    }
-
-    private static String wrapText(String text, int maxCharsPerLine) {
-        if (text == null || text.length() <= maxCharsPerLine || text.contains("\n")) {
-            return text;
-        }
-
-        StringBuilder sb = new StringBuilder();
-        String[] words = text.split(" ");
-        int currentLineLength = 0;
-
-        for (String word : words) {
-            if (currentLineLength + word.length() + 1 > maxCharsPerLine) {
-                if (sb.length() > 0) {
-                    sb.append("\n");
-                }
-                sb.append(word);
-                currentLineLength = word.length();
-            } else {
-                if (sb.length() > 0 && currentLineLength > 0) {
-                    sb.append(" ");
-                    currentLineLength++;
-                }
-                sb.append(word);
-                currentLineLength += word.length();
-            }
-        }
-
-        return sb.toString();
-    }
-
+    /** Dipanggil dari render thread: harus cepat, tanpa I/O. */
     public static String processString(String original) {
-        if (original == null) return original;
-        
-        String trimmed = original.trim();
-        
-        if (trimmed.isEmpty() || trimmed.length() <= 1 || trimmed.matches("^\\d+$")) {
-            return original;
+        if (original == null || original.trim().isEmpty()) return original;
+
+        String translated = translationMap.get(original);
+        if (translated != null) return translated;
+
+        if (isDumpMode && jsonFile != null && !isNumeric(original)
+                && seen.put(original, Boolean.TRUE) == null) {
+            pending.put(original, original);
+            dirty = true;
         }
-
-        if (translationMap.containsKey(trimmed)) {
-            if (dumpedStrings.remove(trimmed) != null) {
-                hasNewDataToSave.set(true);
-            }
-            
-            String translated = translationMap.get(trimmed);
-            int maxChar = Math.max(trimmed.length() + 3, 18);
-            if (translated.length() > trimmed.length()) {
-                translated = wrapText(translated, maxChar);
-            }
-
-            return original.replace(trimmed, translated);
-        }
-
-        if (reverseTranslationMap.containsKey(trimmed)) {
-            return original;
-        }
-
-        if (autoTranslateEnabled && !sedangDiterjemahkan.containsKey(trimmed)) {
-            sedangDiterjemahkan.put(trimmed, Boolean.TRUE);
-            if (translateExecutor != null && !translateExecutor.isShutdown()) {
-                translateExecutor.execute(() -> terjemahkanViaAPI(trimmed));
-            }
-        }
-
-        if (isDumpMode) {
-            dumpedStrings.keySet().removeIf(key -> trimmed.length() > key.length() && trimmed.contains(key));
-
-            boolean isSubText = false;
-            for (String key : dumpedStrings.keySet()) {
-                if (key.length() >= trimmed.length() && key.contains(trimmed)) {
-                    isSubText = true;
-                    break;
-                }
-            }
-
-            if (!isSubText && !dumpedStrings.containsKey(trimmed)) {
-                dumpedStrings.put(trimmed, trimmed);
-                hasNewDataToSave.set(true);
-            }
-        }
-
         return original;
     }
 
-    private static void terjemahkanViaAPI(String teks) {
-        HttpURLConnection conn = null;
-        try {
-            String urlStr = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=id&dt=t&q=" 
-                    + URLEncoder.encode(teks, "UTF-8");
-            
-            URL url = new URL(urlStr);
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(3000);
-            conn.setReadTimeout(3000);
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-
-            if (conn.getResponseCode() == 200) {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-                    StringBuilder response = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        response.append(line);
-                    }
-
-                    JSONArray jsonArray = new JSONArray(response.toString());
-                    if (jsonArray.length() > 0) {
-                        JSONArray sentences = jsonArray.getJSONArray(0);
-                        StringBuilder translatedResult = new StringBuilder();
-
-                        for (int i = 0; i < sentences.length(); i++) {
-                            JSONArray sentence = sentences.getJSONArray(i);
-                            translatedResult.append(sentence.getString(0));
-                        }
-
-                        String hasilTranslate = translatedResult.toString();
-
-                        if (!hasilTranslate.isEmpty() && !hasilTranslate.equals(teks)) {
-                            translationMap.put(teks, hasilTranslate);
-                            reverseTranslationMap.put(hasilTranslate, teks);
-
-                            hasNewTranslationToSave.set(true);
-
-                            if (dumpedStrings.remove(teks) != null) {
-                                hasNewDataToSave.set(true);
-                            }
-                        }
-                    }
-                }
+    private static boolean isNumeric(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!Character.isDigit(c) && !Character.isWhitespace(c)
+                    && c != '/' && c != ':' && c != '.' && c != '-' && c != '+' && c != '%') {
+                return false;
             }
-        } catch (Exception e) {
-            // Error koneksi diabaikan
-        } finally {
-            if (conn != null) {
-                conn.disconnect();
-            }
-            sedangDiterjemahkan.remove(teks);
         }
+        return true;
     }
 
-    public static void setDumpMode(boolean enabled) { isDumpMode = enabled; }
-    public static boolean isDumpMode() { return isDumpMode; }
-    public static void setAutoTranslateEnabled(boolean enabled) { autoTranslateEnabled = enabled; }
-    public static boolean isAutoTranslateEnabled() { return autoTranslateEnabled; }
-}
-
-// ==========================================
-// 2. CLASS GRAPHICS UTILS (VERSI ANDROID NATIVE CANVAS/PAINT)
-// ==========================================
-class GraphicsUtils {
-
-    /**
-     * Menggambar string pada Android Canvas dengan Auto-Scaling, Text Shadow, Arial Bold, dan Line Height.
-     */
-    public static void drawStringIntercepted(Canvas canvas, Paint paint, String str, float x, float y, int anchor) {
-        if (str == null || str.trim().isEmpty() || canvas == null || paint == null) return;
-
-        String teksBaru = TranslationManager.processString(str);
-
-        // Backup state paint asli
-        Typeface oldTypeface = paint.getTypeface();
-        boolean oldAntiAlias = paint.isAntiAlias();
-        boolean oldSubpixel = paint.isSubpixelText();
-        float textSize = paint.getTextSize() > 0 ? paint.getTextSize() : 13f;
-
-        // Terapkan Arial Bold & Anti-Aliasing (Meniru CSS -webkit-font-smoothing)
-        paint.setTypeface(Typeface.create("Arial", Typeface.BOLD));
-        paint.setAntiAlias(true);
-        paint.setSubpixelText(true);
-
-        try {
-            if (teksBaru.contains("\n")) {
-                float lineHeight = textSize * 1.6f; // Line-Height 1.6
-                String[] baris = teksBaru.split("\n");
-                for (int i = 0; i < baris.length; i++) {
-                    float nextY = y + (i * lineHeight);
-                    renderAndScaleText(canvas, paint, str, baris[i], x, nextY, anchor);
-                }
-            } else {
-                renderAndScaleText(canvas, paint, str, teksBaru, x, y, anchor);
+    private static String readFile(File f) throws Exception {
+        try (InputStream in = new FileInputStream(f)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
             }
-        } finally {
-            // Restore state paint bawaan
-            paint.setTypeface(oldTypeface);
-            paint.setAntiAlias(oldAntiAlias);
-            paint.setSubpixelText(oldSubpixel);
+            String s = new String(out.toByteArray(), UTF8);
+            // buang BOM kalau file disimpan editor Windows
+            if (!s.isEmpty() && s.charAt(0) == '\uFEFF') s = s.substring(1);
+            return s;
         }
-    }
-
-    private static void renderAndScaleText(Canvas canvas, Paint paint, String teksAsli, String teksRender, float x, float y, int anchor) {
-        float widthAsli = paint.measureText(teksAsli);
-        float widthBaru = paint.measureText(teksRender);
-
-        Paint.FontMetrics fm = paint.getFontMetrics();
-
-        float drawX = alignX(x, widthAsli, anchor);
-        float drawY = alignY(y, fm, anchor);
-
-        boolean butuhScaling = !teksRender.equals(teksAsli) && (widthBaru > widthAsli) && (widthBaru > 0);
-
-        canvas.save();
-        try {
-            if (butuhScaling) {
-                float scaleX = widthAsli / widthBaru;
-
-                canvas.translate(drawX, drawY);
-                canvas.scale(scaleX, 1.0f);
-
-                drawShadowAndText(canvas, paint, teksRender, 0, 0);
-            } else {
-                drawShadowAndText(canvas, paint, teksRender, drawX, drawY);
-            }
-        } finally {
-            canvas.restore();
-        }
-    }
-
-    private static void drawShadowAndText(Canvas canvas, Paint paint, String text, float x, float y) {
-        int originalColor = paint.getColor();
-
-        // 1. Text Shadow Hitam Transparan: 1px 1px offset
-        paint.setColor(Color.argb(140, 0, 0, 0));
-        canvas.drawText(text, x + 1f, y + 1f, paint);
-
-        // 2. Teks Utama
-        paint.setColor(originalColor);
-        canvas.drawText(text, x, y, paint);
-    }
-
-    private static float alignX(float x, float width, int anchor) {
-        if ((anchor & 1) != 0) return x - (width / 2f); // HCENTER
-        if ((anchor & 8) != 0) return x - width;         // RIGHT
-        return x;                                        // LEFT
-    }
-
-    private static float alignY(float y, Paint.FontMetrics fm, int anchor) {
-        if ((anchor & 16) != 0) return y - fm.ascent;                  // TOP
-        if ((anchor & 32) != 0) return y - (fm.ascent + fm.descent)/2f; // VCENTER
-        if ((anchor & 64) != 0) return y - fm.descent;                 // BOTTOM
-        return y;                                                      // Baseline default
     }
 }
